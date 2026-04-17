@@ -108,6 +108,72 @@ class SceneClassification(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# Vision bounding boxes — the LLM+OCR path (alt to pixel heuristics)
+# ---------------------------------------------------------------------------
+
+
+class BoundingBox(BaseModel):
+    """Normalized [0..1] bounding box in the source frame coordinate space.
+
+    Normalized coords keep these outputs portable across source resolutions
+    and stop the model hallucinating pixel values. ``x2 > x1`` and
+    ``y2 > y1`` are enforced.
+    """
+
+    x1: float = Field(ge=0.0, le=1.0)
+    y1: float = Field(ge=0.0, le=1.0)
+    x2: float = Field(ge=0.0, le=1.0)
+    y2: float = Field(ge=0.0, le=1.0)
+    label: str = ""
+    confidence: float = Field(default=1.0, ge=0.0, le=1.0)
+
+    @field_validator("x2")
+    @classmethod
+    def _x2_after_x1(cls, v: float, info) -> float:
+        x1 = info.data.get("x1", 0.0)
+        if v <= x1:
+            raise ValueError("x2 must be > x1")
+        return v
+
+    @field_validator("y2")
+    @classmethod
+    def _y2_after_y1(cls, v: float, info) -> float:
+        y1 = info.data.get("y1", 0.0)
+        if v <= y1:
+            raise ValueError("y2 must be > y1")
+        return v
+
+    @property
+    def center_x(self) -> float:
+        return (self.x1 + self.x2) / 2.0
+
+    @property
+    def center_y(self) -> float:
+        return (self.y1 + self.y2) / 2.0
+
+    @property
+    def width(self) -> float:
+        return self.x2 - self.x1
+
+
+class SceneRegions(BaseModel):
+    """Vision-LLM output for a single scene keyframe.
+
+    Flow: detect a scene change locally (cheap) -> extract one keyframe per
+    scene -> send that keyframe to a vision LLM with an OCR hint -> get
+    normalized bounding boxes for the on-screen roles (``person``,
+    ``chart``). Those boxes drive ``person_x_norm`` / ``chart_x_norm`` on a
+    ``LayoutInstruction`` without any pixel code running in Python.
+    """
+
+    scene_id: str
+    person_bbox: BoundingBox | None = None
+    chart_bbox: BoundingBox | None = None
+    ocr_text: str = ""
+    raw_reason: str = ""
+
+
+# ---------------------------------------------------------------------------
 # Clip planning
 # ---------------------------------------------------------------------------
 
@@ -147,7 +213,7 @@ class RenderRequest(BaseModel):
     output_path: str
     width: int = 1080
     height: int = 1920
-    burn_subtitles: bool = False
+    subtitle_path: str | None = None
     title_text: str = ""
     mode: Literal["normal", "dry_run"] = "normal"
 

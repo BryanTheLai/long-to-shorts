@@ -23,8 +23,15 @@ def _ensure_ffmpeg() -> str:
 
 
 def _escape_drawtext(text: str) -> str:
-    # ffmpeg drawtext quoting: single quotes and colons need escaping.
-    return text.replace("\\", "\\\\").replace(":", "\\:").replace("'", "\\'")
+    # drawtext quoting is brittle across ffmpeg builds. Keep it simple:
+    # collapse whitespace, drop apostrophes, and escape the characters
+    # that are still significant to the filter parser.
+    safe = " ".join(text.split()).replace("'", "")
+    return safe.replace("\\", "\\\\").replace(":", "\\:")
+
+
+def _escape_filter_path(path: str) -> str:
+    return path.replace("\\", "/").replace(":", "\\:").replace("'", "\\'")
 
 
 def build_ffmpeg_cmd(req: RenderRequest, *, src_w: int = 1920, src_h: int = 1080) -> list[str]:
@@ -42,8 +49,21 @@ def build_ffmpeg_cmd(req: RenderRequest, *, src_w: int = 1920, src_h: int = 1080
                 "[vout]",
                 "[v_prepad];"
                 f"[v_prepad]drawtext=text='{title_esc}':"
+                "expansion=none:"
                 "fontcolor=white:fontsize=72:borderw=4:bordercolor=black:"
                 "x=(w-text_w)/2:y=80[vout]",
+            )
+        )
+
+    if req.subtitle_path:
+        subtitle_esc = _escape_filter_path(req.subtitle_path)
+        fg = (
+            fg.replace(
+                "[vout]",
+                "[v_sub_in];"
+                f"[v_sub_in]subtitles='{subtitle_esc}':"
+                "force_style='FontSize=24,Alignment=2,MarginV=120,BorderStyle=4,"
+                "BackColour=&H80000000,Outline=0,Shadow=0,Bold=1'[vout]",
             )
         )
 

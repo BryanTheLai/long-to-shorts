@@ -63,3 +63,31 @@ def test_classify_scenes_tool_no_keyframes():
     out = srv.classify_scenes(scenes=scenes)
     assert out["classifications"][0]["scene_id"] == "s0"
     assert out["classifications"][0]["layout"] in {k.value for k in LayoutKind}
+
+
+def test_detect_scene_regions_returns_jobs_and_prompt():
+    scenes = [
+        {"scene_id": "s0", "start_time": 0.0, "end_time": 5.0, "keyframe_path": "/tmp/k0.jpg"},
+        {"scene_id": "s1", "start_time": 5.0, "end_time": 10.0, "keyframe_path": "/tmp/k1.jpg"},
+    ]
+    out = srv.detect_scene_regions(scenes=scenes)
+    assert "STRICT JSON" in out["prompt"]
+    assert len(out["jobs"]) == 2
+    assert out["jobs"][0]["scene_id"] == "s0"
+    assert out["jobs"][0]["keyframe_path"] == "/tmp/k0.jpg"
+
+
+def test_classify_scenes_with_vision_derives_instructions():
+    regions = [
+        {
+            "scene_id": "s0",
+            "chart_bbox": {"x1": 0.0, "y1": 0.0, "x2": 0.66, "y2": 1.0},
+            "person_bbox": {"x1": 0.72, "y1": 0.1, "x2": 0.99, "y2": 0.95},
+            "ocr_text": "CPI YoY",
+        }
+    ]
+    out = srv.classify_scenes_with_vision(regions=regions)
+    assert out["classifications"][0]["layout"] == LayoutKind.SPLIT_CHART_PERSON.value
+    instr = out["layout_instructions"][0]
+    assert instr["chart_x_norm"] == 0.0
+    assert 0.8 < instr["person_x_norm"] < 0.9

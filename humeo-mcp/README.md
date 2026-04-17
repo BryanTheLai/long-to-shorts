@@ -57,9 +57,8 @@ is.
 ## Install
 
 ```bash
-pip install -e .
-# optional: word-level transcription
-pip install 'humeo-mcp[transcribe]'
+uv venv
+uv sync
 ```
 
 External requirements: `ffmpeg` and `ffprobe` on PATH.
@@ -85,25 +84,28 @@ Example Cursor/Claude Desktop config:
 
 Tools exposed:
 
-| Tool                   | Purpose                                                          |
-| ---------------------- | ---------------------------------------------------------------- |
-| `list_layouts`         | Enumerate the 3 supported layouts.                               |
-| `ingest`               | Scene detection + keyframe extraction (+ optional transcript).   |
-| `classify_scenes`      | Heuristic per-scene layout classification.                       |
-| `select_clips`         | Heuristic clip picker over a word-level transcript.              |
-| `plan_layout`          | Return the exact `ffmpeg -filter_complex` for a layout.          |
-| `build_render_cmd`     | Build the ffmpeg command (no execution) — review before spend.   |
-| `render_clip`          | Build + run ffmpeg to produce a 9:16 MP4.                        |
+| Tool                              | Purpose                                                                     |
+| --------------------------------- | --------------------------------------------------------------------------- |
+| `list_layouts`                    | Enumerate the 3 supported layouts.                                          |
+| `ingest`                          | Scene detection + keyframe extraction (+ optional transcript).              |
+| `classify_scenes`                 | Pixel-heuristic per-scene layout classification.                            |
+| `detect_scene_regions`            | Return the bbox prompt + per-scene jobs (agent runs its own vision model).  |
+| `classify_scenes_with_vision`     | Classify scenes from already-gathered `SceneRegions` bbox JSON + build layout instructions. |
+| `select_clips`                    | Heuristic clip picker over a word-level transcript.                         |
+| `plan_layout`                     | Return the exact `ffmpeg -filter_complex` for a layout.                     |
+| `build_render_cmd`                | Build the ffmpeg command (no execution) — review before spend.              |
+| `render_clip`                     | Build + run ffmpeg to produce a 9:16 MP4.                                   |
 
 Resource: `humeo://layouts` (JSON listing of the 3 layouts).
 
-## Use it as a CLI
+### Three interchangeable region detectors
 
-```bash
-humeo layouts
-humeo plan-layout zoom_call_center --zoom 1.3
-humeo ingest /path/to/long.mp4 ./work --with-transcript
-humeo pipeline /path/to/long.mp4 ./out --clips 3 --min-sec 30 --max-sec 60
+All three emit the same `SceneRegions` schema, so the layout planner and renderer don't care which one you used:
+
+```
+classify.py   (pixel variance, no ML)
+face_detect.py (MediaPipe, local)            ──► SceneRegions ──► SceneClassification ──► LayoutInstruction ──► ffmpeg
+vision.py     (multimodal LLM + OCR bboxes)
 ```
 
 ## JSON contracts (non-negotiable)
@@ -115,6 +117,8 @@ All tools take and return Pydantic-validated JSON. The contracts live in
 - `TranscriptWord`            `{word, start_time, end_time}`
 - `IngestResult`              `{source_path, duration_sec, scenes[], transcript_words[], keyframes_dir?}`
 - `SceneClassification`       `{scene_id, layout, confidence, reason}`
+- `BoundingBox`               `{x1, y1, x2, y2, label, confidence}`  (all coords normalized)
+- `SceneRegions`              `{scene_id, person_bbox?, chart_bbox?, ocr_text, raw_reason}`
 - `Clip`                      `{clip_id, topic, start_time_sec, end_time_sec, viral_hook, virality_score, transcript, suggested_overlay_title, layout?}`
 - `ClipPlan`                  `{source_path, clips[]}`
 - `LayoutInstruction`         `{clip_id, layout, zoom, person_x_norm, chart_x_norm}`
@@ -136,7 +140,11 @@ All tools take and return Pydantic-validated JSON. The contracts live in
 
 - Plug a real multimodal model into `classify_scenes_with_llm(vision_fn)`.
 - Plug a real reasoning model into `select_clips_with_llm(text_fn)`.
-- Both enforce strict JSON outputs, so bad model output can't corrupt
+- Plug a real vision-LLM into `detect_regions_with_llm(scenes, vision_fn)`
+  to get per-scene bboxes + OCR text, then feed the results back through
+  `classify_scenes_with_vision`. This is the scene-change → v3 images →
+  LLM+OCR → bbox path; see `../docs/SOLUTIONS.md §4` for rationale.
+- All enforce strict JSON outputs, so bad model output can't corrupt
   downstream stages.
 
 ## Testing

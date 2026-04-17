@@ -1,8 +1,5 @@
-import pytest
 
 from humeo_mcp.primitives.layouts import (
-    DEFAULT_SRC_H,
-    DEFAULT_SRC_W,
     _center_crop_to_9x16,
     _crop_box,
     plan_layout,

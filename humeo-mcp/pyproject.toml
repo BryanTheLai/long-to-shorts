@@ -18,7 +18,7 @@ classifiers = [
     "Programming Language :: Python :: 3.12",
 ]
 dependencies = [
-    "mcp>=1.0.0",
+    "mcp[cli]>=1.2.0",
     "pydantic>=2.0",
     "scenedetect>=0.6",
 ]
@@ -26,11 +26,12 @@ dependencies = [
 [project.optional-dependencies]
 transcribe = ["faster-whisper>=1.0"]
 download = ["yt-dlp>=2024.0"]
-dev = ["pytest>=7", "pytest-asyncio>=0.23"]
+face = ["mediapipe>=0.10", "opencv-python>=4.8"]
+vision = ["Pillow>=10.0"]
+dev = ["pytest>=7", "pytest-asyncio>=0.23", "Pillow>=10.0"]
 
 [project.scripts]
 humeo-mcp = "humeo_mcp.server:main"
-humeo = "humeo_mcp.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

@@ -9,29 +9,33 @@ First-principles design (rocket analogy):
 """
 
 from .schemas import (
-    Scene,
-    TranscriptWord,
+    BoundingBox,
     Clip,
     ClipPlan,
-    LayoutKind,
+    IngestResult,
     LayoutInstruction,
-    SceneClassification,
+    LayoutKind,
     RenderRequest,
     RenderResult,
-    IngestResult,
+    Scene,
+    SceneClassification,
+    SceneRegions,
+    TranscriptWord,
 )
 
 __all__ = [
-    "Scene",
-    "TranscriptWord",
+    "BoundingBox",
     "Clip",
     "ClipPlan",
-    "LayoutKind",
+    "IngestResult",
     "LayoutInstruction",
-    "SceneClassification",
+    "LayoutKind",
     "RenderRequest",
     "RenderResult",
-    "IngestResult",
+    "Scene",
+    "SceneClassification",
+    "SceneRegions",
+    "TranscriptWord",
 ]
 
 __version__ = "0.1.0"

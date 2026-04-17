@@ -14,7 +14,7 @@ That analogy maps exactly onto this MCP:
 | Pilot           | `primitives/classify.py` + `primitives/select_clips.py`          | Heuristic + LLM-ready decision makers.                                  |
 | Compiler        | `src/humeo_mcp/primitives/compile.py`                            | Deterministic ffmpeg assembly.                                          |
 | Control panel   | `src/humeo_mcp/server.py`                                        | MCP tools exposing every primitive.                                     |
-| Manual controls | `src/humeo_mcp/cli.py`                                           | CLI mirror of the MCP tools for terminal use.                           |
+| Control surface | `src/humeo_mcp/server.py`                                        | MCP tool surface for agents and clients.                                |
 
 ## First-principles reasoning
 

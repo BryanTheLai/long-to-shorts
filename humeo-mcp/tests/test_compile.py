@@ -30,11 +30,14 @@ def test_ffmpeg_cmd_has_ss_duration_filtergraph_output():
 
 
 def test_title_text_injects_drawtext():
-    cmd = build_ffmpeg_cmd(_req(title_text="Hello: world"))
+    cmd = build_ffmpeg_cmd(_req(title_text="Hello: world's"))
     fg = cmd[cmd.index("-filter_complex") + 1]
     assert "drawtext" in fg
     # colon should be escaped
     assert "Hello\\:" in fg
+    assert "worlds" in fg
+    assert "world's" not in fg
+    assert "expansion=none" in fg
 
 
 def test_map_vout_and_optional_audio():

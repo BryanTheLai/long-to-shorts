@@ -7,13 +7,15 @@ any interface.
 
 Tools:
 
-    humeo.ingest                — Stage 1 extraction (scenes + keyframes [+ transcript])
-    humeo.classify_scenes       — Assign one of 3 layouts to each scene (heuristic)
-    humeo.select_clips          — Pick top clips from a transcript (heuristic)
-    humeo.plan_layout           — Return the ffmpeg filtergraph for a given layout
-    humeo.build_render_cmd      — Build the full ffmpeg command (dry-run safe)
-    humeo.render_clip           — Build + actually run ffmpeg to produce a 9:16 clip
-    humeo.list_layouts          — List the 3 available layouts (discovery)
+    humeo.ingest                      — Stage 1 extraction (scenes + keyframes [+ transcript])
+    humeo.classify_scenes             — Assign one of 3 layouts to each scene (pixel heuristic)
+    humeo.classify_scenes_with_vision — Assign layouts using bboxes from a vision LLM + OCR
+    humeo.detect_scene_regions        — Raw LLM bbox output per scene keyframe (OCR-assisted)
+    humeo.select_clips                — Pick top clips from a transcript (heuristic)
+    humeo.plan_layout                 — Return the ffmpeg filtergraph for a given layout
+    humeo.build_render_cmd            — Build the full ffmpeg command (dry-run safe)
+    humeo.render_clip                 — Build + actually run ffmpeg to produce a 9:16 clip
+    humeo.list_layouts                — List the 3 available layouts (discovery)
 
 Resources:
 
@@ -32,16 +34,15 @@ from .primitives import compile as compile_mod
 from .primitives import ingest as ingest_mod
 from .primitives import layouts as layouts_mod
 from .primitives import select_clips as select_mod
+from .primitives import vision as vision_mod
 from .schemas import (
-    Clip,
-    ClipPlan,
     IngestResult,
     LayoutInstruction,
     LayoutKind,
     RenderRequest,
     RenderResult,
     Scene,
-    SceneClassification,
+    SceneRegions,
     TranscriptWord,
 )
 
@@ -135,12 +136,69 @@ def classify_scenes(scenes: list[dict[str, Any]]) -> dict[str, Any]:
     """Classify each scene into exactly one of the 3 supported layouts.
 
     Uses an offline pixel heuristic on each scene's keyframe. Agents that
-    want a smarter classifier can post-process or overwrite the result.
+    want a smarter classifier can post-process or overwrite the result,
+    or call ``classify_scenes_with_vision`` with bboxes from a vision LLM.
     """
 
     parsed = [Scene.model_validate(s) for s in scenes]
     results = classify_mod.classify_scenes_heuristic(parsed)
     return {"classifications": [r.model_dump() for r in results]}
+
+
+# ---------------------------------------------------------------------------
+# Pilot (alt path): vision-LLM + OCR bbox classifier
+# ---------------------------------------------------------------------------
+
+
+@mcp.tool()
+def detect_scene_regions(scenes: list[dict[str, Any]]) -> dict[str, Any]:
+    """Return the prompt + per-scene stubs used for LLM+OCR bbox detection.
+
+    This tool is the *adapter* half of the vision primitive. The MCP server
+    itself never calls an LLM — the agent does. So this endpoint returns:
+
+    1. the exact ``REGION_PROMPT`` to send along with each keyframe, and
+    2. a list of ``{scene_id, keyframe_path, prompt}`` jobs.
+
+    The agent runs its own vision model for each job, then feeds the
+    resulting JSON back via ``classify_scenes_with_vision``.
+    """
+
+    parsed = [Scene.model_validate(s) for s in scenes]
+    return {
+        "prompt": vision_mod.REGION_PROMPT,
+        "jobs": [
+            {
+                "scene_id": s.scene_id,
+                "keyframe_path": s.keyframe_path,
+                "prompt": vision_mod.REGION_PROMPT,
+            }
+            for s in parsed
+        ],
+    }
+
+
+@mcp.tool()
+def classify_scenes_with_vision(regions: list[dict[str, Any]]) -> dict[str, Any]:
+    """Classify scenes from already-gathered ``SceneRegions`` bbox records.
+
+    Input is a list of ``SceneRegions`` JSON dicts (output of the agent's
+    vision-LLM pass). Output is a ``{classifications, layout_instructions}``
+    pair — the layout kind per scene plus a ready-to-render
+    ``LayoutInstruction`` with ``person_x_norm`` / ``chart_x_norm`` already
+    populated from the bboxes.
+    """
+
+    parsed_regions = [SceneRegions.model_validate(r) for r in regions]
+    classifications = [vision_mod.classify_from_regions(r) for r in parsed_regions]
+    instructions = [
+        vision_mod.layout_instruction_from_regions(r, c)
+        for r, c in zip(parsed_regions, classifications)
+    ]
+    return {
+        "classifications": [c.model_dump() for c in classifications],
+        "layout_instructions": [i.model_dump() for i in instructions],
+    }
 
 
 # ---------------------------------------------------------------------------
