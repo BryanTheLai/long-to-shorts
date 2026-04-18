@@ -27,8 +27,8 @@ htmlcov/
 !.env.example
 
 # Humeo runtime artefacts
-.humeo_work/
-.humeo_work_*/
+# .humeo_work/
+# .humeo_work_*/
 output/
 output_*/
 keyframes/

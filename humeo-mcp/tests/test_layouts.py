@@ -4,7 +4,7 @@ from humeo_mcp.primitives.layouts import (
     _crop_box,
     plan_layout,
 )
-from humeo_mcp.schemas import LayoutInstruction, LayoutKind
+from humeo_mcp.schemas import FocusStackOrder, LayoutInstruction, LayoutKind
 
 
 def test_crop_box_aspect_exact():
@@ -66,6 +66,25 @@ def test_split_layout_contains_vstack():
     fg = plan.filtergraph
     assert _contains(fg, "split=2", "vstack=inputs=2", "[vout]")
     assert "[top]" in fg and "[bot]" in fg
+
+
+def test_split_layout_person_crop_is_right_third():
+    """Chart uses left 2/3; person uses right 1/3 (non-overlapping)."""
+    instr = LayoutInstruction(clip_id="c", layout=LayoutKind.SPLIT_CHART_PERSON)
+    fg = plan_layout(instr, out_w=1080, out_h=1920, src_w=1920, src_h=1080).filtergraph
+    # Right third: x=1280, w=640 for 1920-wide source.
+    assert "crop=640:1080:1280:0" in fg
+
+
+def test_split_layout_can_swap_stack_order():
+    instr = LayoutInstruction(
+        clip_id="c",
+        layout=LayoutKind.SPLIT_CHART_PERSON,
+        person_x_norm=0.83,
+        focus_stack_order=FocusStackOrder.PERSON_THEN_CHART,
+    )
+    fg = plan_layout(instr, out_w=1080, out_h=1920).filtergraph
+    assert "[ptop]" in fg and "[cbot]" in fg and "vstack=inputs=2" in fg
 
 
 def test_split_layout_person_clamped():

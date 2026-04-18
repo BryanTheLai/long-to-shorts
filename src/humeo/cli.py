@@ -32,8 +32,8 @@ def build_parser() -> argparse.ArgumentParser:
         epilog="""
 Examples:
   humeo --long-to-shorts "https://youtube.com/watch?v=abc123"
-  humeo --long-to-shorts "https://youtube.com/watch?v=abc123" --provider openai
-  humeo --long-to-shorts "https://youtube.com/watch?v=abc123" -o output
+  humeo --long-to-shorts "https://youtube.com/watch?v=abc123" --work-dir .humeo_work
+  humeo --long-to-shorts "https://youtube.com/watch?v=abc123" --gemini-model gemini-2.0-flash
         """,
     )
 
@@ -54,15 +54,46 @@ Examples:
     parser.add_argument(
         "--work-dir",
         type=Path,
-        default=Path(".humeo_work"),
-        help="Working directory for intermediate files (default: ./.humeo_work)",
+        default=None,
+        help="Working directory for intermediate files. Default: per-video folder under the "
+        "cache root (see docs/ENVIRONMENT.md). Use this to force e.g. ./.humeo_work.",
     )
 
     parser.add_argument(
-        "--provider",
-        choices=["gemini", "openai"],
-        default="gemini",
-        help="LLM provider for clip selection (default: gemini)",
+        "--no-video-cache",
+        action="store_true",
+        help="Do not use per-video cache dirs; use ./.humeo_work unless --work-dir is set.",
+    )
+
+    parser.add_argument(
+        "--cache-root",
+        type=Path,
+        default=None,
+        help="Override cache root for manifests and per-video ingest (env: HUMEO_CACHE_ROOT).",
+    )
+
+    parser.add_argument(
+        "--gemini-model",
+        default=None,
+        help="Gemini model id for clip selection (default: GEMINI_MODEL env; see humeo.config).",
+    )
+
+    parser.add_argument(
+        "--force-clip-selection",
+        action="store_true",
+        help="Re-run clip-selection LLM even when clips.meta.json matches the transcript.",
+    )
+
+    parser.add_argument(
+        "--gemini-vision-model",
+        default=None,
+        help="Gemini model for per-keyframe layout + bbox (default: GEMINI_VISION_MODEL env or --gemini-model).",
+    )
+
+    parser.add_argument(
+        "--force-layout-vision",
+        action="store_true",
+        help="Re-run Gemini vision for layouts even when layout_vision.meta.json matches.",
     )
 
     parser.add_argument(
@@ -84,7 +115,12 @@ def main():
         youtube_url=args.long_to_shorts,
         output_dir=args.output,
         work_dir=args.work_dir,
-        llm_provider=args.provider,
+        use_video_cache=not args.no_video_cache,
+        cache_root=args.cache_root,
+        gemini_model=args.gemini_model,
+        gemini_vision_model=args.gemini_vision_model,
+        force_clip_selection=args.force_clip_selection,
+        force_layout_vision=args.force_layout_vision,
     )
 
     try:

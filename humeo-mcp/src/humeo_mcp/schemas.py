@@ -10,7 +10,7 @@ from __future__ import annotations
 from enum import Enum
 from typing import Literal
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 # ---------------------------------------------------------------------------
@@ -40,9 +40,24 @@ class Scene(BaseModel):
 
 
 class TranscriptWord(BaseModel):
+    """One ASR token with times in **seconds on the source video** timeline."""
+
     word: str
     start_time: float = Field(ge=0)
     end_time: float = Field(ge=0)
+
+
+class ClipSubtitleWords(BaseModel):
+    """Words for one clip with times in **seconds relative to clip start** (t=0 at cut in-point)."""
+
+    words: list[TranscriptWord] = Field(default_factory=list)
+
+
+class FocusStackOrder(str, Enum):
+    """Vertical order for ``SPLIT_CHART_PERSON``: who occupies the top 60% / bottom 40% bands."""
+
+    CHART_THEN_PERSON = "chart_then_person"
+    PERSON_THEN_CHART = "person_then_chart"
 
 
 class IngestResult(BaseModel):
@@ -94,7 +109,25 @@ class LayoutInstruction(BaseModel):
         default=0.0,
         ge=0.0,
         le=1.0,
-        description="Normalized x-start of the chart region in source frame (only used by split_chart_person).",
+        description=(
+            "split_chart_person only: left-edge trim of the chart strip, as a fraction of the "
+            "left 2/3 pane (0 = use full chart area)."
+        ),
+    )
+    focus_stack_order: FocusStackOrder = Field(
+        default=FocusStackOrder.CHART_THEN_PERSON,
+        description="For split_chart_person only: chart-on-top vs person-on-top in the 9:16 stack.",
+    )
+    split_chart_region: BoundingBox | None = Field(
+        default=None,
+        description=(
+            "Optional normalized rect for the chart/slide crop (Gemini vision). "
+            "When set with split_person_region, the split layout uses these boxes instead of fixed 2/3|1/3."
+        ),
+    )
+    split_person_region: BoundingBox | None = Field(
+        default=None,
+        description="Optional normalized rect for the speaker crop (Gemini vision).",
     )
 
 
@@ -188,6 +221,49 @@ class Clip(BaseModel):
     transcript: str = ""
     suggested_overlay_title: str = ""
     layout: LayoutKind | None = None
+
+    # Optional LLM metadata (source timeline is start_time_sec / end_time_sec).
+    hook_start_sec: float | None = Field(
+        default=None,
+        description="Seconds from clip in-point where the viral hook begins (0 = clip start).",
+    )
+    hook_end_sec: float | None = Field(
+        default=None,
+        description="Seconds from clip in-point where the hook ends (exclusive upper bound).",
+    )
+    trim_start_sec: float = Field(
+        default=0.0,
+        ge=0,
+        description="Seconds to remove from the start of this segment when exporting.",
+    )
+    trim_end_sec: float = Field(
+        default=0.0,
+        ge=0,
+        description="Seconds to remove from the end of this segment when exporting.",
+    )
+    shorts_title: str = ""
+    description: str = ""
+    hashtags: list[str] = Field(default_factory=list)
+    layout_hint: LayoutKind | None = None
+    needs_review: bool = False
+    review_reason: str = ""
+
+    @model_validator(mode="after")
+    def _timing_consistency(self) -> "Clip":
+        if self.end_time_sec <= self.start_time_sec:
+            raise ValueError("end_time_sec must be greater than start_time_sec")
+        dur = self.end_time_sec - self.start_time_sec
+        hs, he = self.hook_start_sec, self.hook_end_sec
+        if (hs is None) ^ (he is None):
+            raise ValueError("hook_start_sec and hook_end_sec must both be set or both omitted")
+        if hs is not None and he is not None:
+            if not (0 <= hs < he <= dur):
+                raise ValueError(
+                    "hook window must satisfy 0 <= hook_start_sec < hook_end_sec <= clip duration"
+                )
+        if self.trim_start_sec + self.trim_end_sec > dur:
+            raise ValueError("trim_start_sec + trim_end_sec must not exceed clip duration")
+        return self
 
     @property
     def duration_sec(self) -> float:

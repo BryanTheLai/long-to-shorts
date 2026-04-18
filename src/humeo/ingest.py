@@ -9,6 +9,7 @@ Responsibilities:
 
 import json
 import logging
+import os
 import subprocess
 from math import ceil
 from pathlib import Path
@@ -33,6 +34,7 @@ def download_video(youtube_url: str, output_dir: Path) -> Path:
         "--merge-output-format", "mp4",
         "--output", output_template,
         "--no-playlist",
+        "--write-info-json",
         "--quiet",
         youtube_url,
     ]
@@ -76,43 +78,73 @@ def extract_audio(video_path: Path, output_dir: Path) -> Path:
     return audio_path
 
 
+def _transcribe_whisperx_local(audio_path: Path) -> dict:
+    """Word-level transcript via WhisperX (local). Raises ImportError if not installed."""
+    import whisperx
+
+    logger.info("Transcribing with WhisperX...")
+    device = "cpu"  # Use "cuda" if GPU available
+    model = whisperx.load_model("base", device=device, compute_type="int8")
+    audio = whisperx.load_audio(str(audio_path))
+    result = model.transcribe(audio, batch_size=16)
+
+    align_model, metadata = whisperx.load_align_model(
+        language_code=result["language"], device=device
+    )
+    result = whisperx.align(
+        result["segments"], align_model, metadata, audio, device,
+        return_char_alignments=False,
+    )
+
+    logger.info("Transcription complete: %d segments", len(result["segments"]))
+    return result
+
+
 def transcribe_whisperx(audio_path: Path, output_dir: Path) -> dict:
     """
-    Transcribe audio using WhisperX for word-level timestamps.
+    Transcribe audio for word-level timestamps.
 
-    Returns the transcript dict with word-level alignments.
-    Falls back to a simpler Whisper approach if WhisperX is unavailable.
+    Provider is controlled by **HUMEO_TRANSCRIBE_PROVIDER** (default ``auto``):
+
+    - ``auto`` — WhisperX if installed, else OpenAI Whisper API.
+    - ``openai`` / ``api`` — OpenAI Whisper API (uses ``OPENAI_API_KEY``), even when WhisperX is installed.
+    - ``whisperx`` / ``local`` — WhisperX only; fails clearly if not installed.
+
+    The result is written to ``output_dir / "transcript.json"``. Re-runs with an
+    existing transcript are skipped by the pipeline before this function runs.
     """
     transcript_path = output_dir / "transcript.json"
+    provider = (os.environ.get("HUMEO_TRANSCRIBE_PROVIDER") or "auto").strip().lower()
 
-    try:
-        import whisperx
-
-        logger.info("Transcribing with WhisperX...")
-        device = "cpu"  # Use "cuda" if GPU available
-        model = whisperx.load_model("base", device=device, compute_type="int8")
-        audio = whisperx.load_audio(str(audio_path))
-        result = model.transcribe(audio, batch_size=16)
-
-        # Align for word-level timestamps
-        align_model, metadata = whisperx.load_align_model(
-            language_code=result["language"], device=device
-        )
-        result = whisperx.align(
-            result["segments"], align_model, metadata, audio, device,
-            return_char_alignments=False,
-        )
-
-        logger.info("Transcription complete: %d segments", len(result["segments"]))
-
-    except ImportError:
-        logger.warning(
-            "WhisperX not installed. Falling back to OpenAI Whisper API. "
-            "Install with: pip install 'humeo[whisper]'"
+    if provider in ("openai", "api"):
+        logger.info(
+            "Transcribing with OpenAI Whisper API (HUMEO_TRANSCRIBE_PROVIDER=%s).",
+            provider,
         )
         result = _transcribe_openai_api(audio_path)
+    elif provider in ("whisperx", "local"):
+        try:
+            result = _transcribe_whisperx_local(audio_path)
+        except ImportError as e:
+            raise RuntimeError(
+                "WhisperX requested (HUMEO_TRANSCRIBE_PROVIDER=whisperx) but whisperx is not installed. "
+                "Install with: uv sync --extra whisper"
+            ) from e
+    else:
+        if provider not in ("auto", ""):
+            logger.warning(
+                "Unknown HUMEO_TRANSCRIBE_PROVIDER=%r; using auto (WhisperX if installed).",
+                provider,
+            )
+        try:
+            result = _transcribe_whisperx_local(audio_path)
+        except ImportError:
+            logger.warning(
+                "WhisperX not installed. Falling back to OpenAI Whisper API. "
+                "Install with: pip install 'humeo[whisper]'"
+            )
+            result = _transcribe_openai_api(audio_path)
 
-    # Persist transcript
     with open(transcript_path, "w", encoding="utf-8") as f:
         json.dump(result, f, indent=2, ensure_ascii=False)
 

@@ -32,13 +32,19 @@ def reframe_clip_ffmpeg(
     clip: Clip,
     *,
     zoom: float = 1.0,
+    layout_instruction: LayoutInstruction | None = None,
     subtitle_path: Path | str | None = None,
     title_text: str = "",
     dry_run: bool = False,
 ) -> RenderRequest:
-    """Render a single clip to 9:16 via one ffmpeg call."""
+    """Render a single clip to 9:16 via one ffmpeg call.
 
-    instr = layout_for_clip(clip, zoom=zoom)
+    If ``layout_instruction`` is set (e.g. from Gemini vision), it is used in full
+    including ``person_x_norm``, ``chart_x_norm``, and optional split bbox fields.
+    Otherwise defaults are derived from ``clip.layout`` via ``layout_for_clip``.
+    """
+
+    instr = layout_instruction if layout_instruction is not None else layout_for_clip(clip, zoom=zoom)
     req = RenderRequest(
         source_path=str(input_path),
         clip=clip,

@@ -1,4 +1,11 @@
-from humeo.ingest import _merge_transcripts, _offset_transcript_timestamps, _plan_openai_chunk_ranges
+from unittest.mock import patch
+
+from humeo.ingest import (
+    _merge_transcripts,
+    _offset_transcript_timestamps,
+    _plan_openai_chunk_ranges,
+    transcribe_whisperx,
+)
 
 
 def test_plan_openai_chunk_ranges_single_chunk_when_under_limit():
@@ -47,3 +54,16 @@ def test_merge_transcripts_concatenates_segments():
     )
     assert merged["language"] == "en"
     assert len(merged["segments"]) == 2
+
+
+def test_transcribe_provider_openai_calls_openai_api(monkeypatch, tmp_path):
+    """When HUMEO_TRANSCRIBE_PROVIDER=openai, do not require whisperx."""
+    monkeypatch.setenv("HUMEO_TRANSCRIBE_PROVIDER", "openai")
+    audio = tmp_path / "a.wav"
+    audio.write_bytes(b"x")
+    out = {"segments": [], "language": "en"}
+    with patch("humeo.ingest._transcribe_openai_api", return_value=out) as m:
+        r = transcribe_whisperx(audio, tmp_path)
+    m.assert_called_once_with(audio)
+    assert r == out
+    assert (tmp_path / "transcript.json").read_text(encoding="utf-8").strip()

@@ -1,61 +1,56 @@
 """
-Step 2 - Clip Selection: Use an LLM to identify viral-worthy segments.
+Step 2 - Clip Selection: Gemini-only LLM for viral clip identification.
 
-Responsibilities:
-  - Send transcript to LLM with a structured prompt.
-  - Parse the response into validated ``humeo_mcp.schemas.Clip`` objects
-    (single source of truth - shared with the MCP primitives).
-  - Output clips.json for downstream consumption.
+Uses the unified ``google-genai`` SDK (``from google import genai``). See:
+https://github.com/googleapis/python-genai
 """
+
+from __future__ import annotations
 
 import json
 import logging
+import time
 from pathlib import Path
+from typing import Callable, TypeVar
+
+from google import genai
+from google.genai import types
 
 from humeo_mcp.schemas import Clip, ClipPlan
 
-from humeo.config import MAX_CLIP_DURATION_SEC, MIN_CLIP_DURATION_SEC, TARGET_CLIP_COUNT
+from humeo.config import (
+    GEMINI_MODEL,
+    MAX_CLIP_DURATION_SEC,
+    MIN_CLIP_DURATION_SEC,
+    TARGET_CLIP_COUNT,
+)
+from humeo.env import resolve_gemini_api_key
+from humeo.prompt_loader import clip_selection_prompts
 
 logger = logging.getLogger(__name__)
 
+T = TypeVar("T")
 
-SYSTEM_PROMPT = """You are a viral content editor. You analyze podcast transcripts and identify
-the most compelling 30-60 second segments that would perform well as short-form vertical videos
-on TikTok, YouTube Shorts, and Instagram Reels.
+LLM_MAX_ATTEMPTS = 3
+LLM_RETRY_DELAY_SEC = 2.0
 
-For each clip you identify, evaluate these factors:
-- Strong emotional hook in the first 3 seconds
-- Self-contained idea (doesn't require external context)
-- Surprising or counterintuitive claim
-- Quotable phrasing
-- Clear takeaway or "aha moment"
 
-Return your analysis as a JSON object with this exact schema:
-{{
-  "clips": [
-    {{
-      "clip_id": "001",
-      "topic": "Brief topic label",
-      "start_time_sec": 123.0,
-      "end_time_sec": 165.5,
-      "viral_hook": "The attention-grabbing opening line or idea",
-      "virality_score": 0.94,
-      "transcript": "Full verbatim text of this segment for subtitle generation",
-      "suggested_overlay_title": "Short punchy title for overlay (max 5 words)"
-    }}
-  ]
-}}
-
-Rules:
-- Each clip must be between {min_dur} and {max_dur} seconds.
-- Return exactly {count} clips, ranked by virality_score (highest first).
-- Timestamps must be exact, matching the word-level timestamps provided.
-- The transcript field must contain the EXACT text from the source, not paraphrased.
-- Return ONLY the JSON object. No markdown, no explanation."""
+def _retry_llm(name: str, fn: Callable[[], T], attempts: int = LLM_MAX_ATTEMPTS) -> T:
+    last: Exception | None = None
+    for i in range(attempts):
+        try:
+            return fn()
+        except Exception as e:
+            last = e
+            if i < attempts - 1:
+                logger.warning("%s attempt %d/%d failed: %s", name, i + 1, attempts, e)
+                time.sleep(LLM_RETRY_DELAY_SEC * (i + 1))
+    assert last is not None
+    raise last
 
 
 def build_prompt(transcript: dict) -> tuple[str, str]:
-    """Return ``(system_prompt, transcript_text)`` for the clip-selector LLM call."""
+    """Return ``(system_prompt, user_message)`` for the clip-selector LLM call."""
     lines = []
     for seg in transcript.get("segments", []):
         start = seg.get("start", 0)
@@ -65,69 +60,49 @@ def build_prompt(transcript: dict) -> tuple[str, str]:
 
     transcript_text = "\n".join(lines)
 
-    system = SYSTEM_PROMPT.format(
+    system, user = clip_selection_prompts(
+        transcript_text=transcript_text,
         min_dur=MIN_CLIP_DURATION_SEC,
         max_dur=MAX_CLIP_DURATION_SEC,
         count=TARGET_CLIP_COUNT,
     )
-
-    return system, transcript_text
-
-
-def select_clips_gemini(transcript: dict) -> list[Clip]:
-    """Use Google Gemini to identify viral clips."""
-    import google.generativeai as genai
-
-    system_prompt, transcript_text = build_prompt(transcript)
-
-    model = genai.GenerativeModel(
-        "gemini-2.0-flash",
-        system_instruction=system_prompt,
-    )
-
-    logger.info("Sending transcript to Gemini for clip selection...")
-    response = model.generate_content(
-        f"Analyze this podcast transcript and identify the top viral clips:\n\n{transcript_text}",
-        generation_config=genai.GenerationConfig(
-            response_mime_type="application/json",
-            temperature=0.3,
-        ),
-    )
-
-    return _parse_clips(response.text)
+    return system, user
 
 
-def select_clips_openai(transcript: dict) -> list[Clip]:
-    """Use OpenAI GPT to identify viral clips."""
-    from openai import OpenAI
+def select_clips(transcript: dict, *, gemini_model: str | None = None) -> tuple[list[Clip], str]:
+    """
+    Call Gemini to select clips. Returns ``(clips, raw_json)`` for caching / debugging.
 
-    system_prompt, transcript_text = build_prompt(transcript)
-    client = OpenAI()
+    Uses ``google.genai.Client`` and ``GenerateContentConfig`` (see Google Gen AI SDK for Python).
+    """
+    model_name = (gemini_model or GEMINI_MODEL).strip()
+    system_prompt, user_text = build_prompt(transcript)
 
-    logger.info("Sending transcript to OpenAI for clip selection...")
-    response = client.chat.completions.create(
-        model="gpt-4o",
-        response_format={"type": "json_object"},
-        messages=[
-            {"role": "system", "content": system_prompt},
-            {
-                "role": "user",
-                "content": f"Analyze this podcast transcript and identify the top viral clips:\n\n{transcript_text}",
-            },
-        ],
-        temperature=0.3,
-    )
+    client = genai.Client(api_key=resolve_gemini_api_key())
 
-    return _parse_clips(response.choices[0].message.content)
+    def _call() -> str:
+        logger.info("Gemini clip selection (model=%s)...", model_name)
+        response = client.models.generate_content(
+            model=model_name,
+            contents=user_text,
+            config=types.GenerateContentConfig(
+                system_instruction=system_prompt,
+                temperature=0.3,
+                response_mime_type="application/json",
+            ),
+        )
+        if not response.text:
+            raise RuntimeError("Gemini returned empty response text")
+        return response.text
+
+    raw = _retry_llm("Gemini clip selection", _call)
+    clips = _parse_clips(raw)
+    clips = sorted(clips, key=lambda c: c.virality_score, reverse=True)
+    return clips, raw
 
 
 def _parse_clips(raw_json: str) -> list[Clip]:
-    """Parse and validate the LLM's JSON response into Clip objects.
-
-    Accepts either ``{"clips": [...]}`` or a bare list. Validation is
-    delegated to Pydantic so malformed model output is rejected here,
-    not deep in the pipeline.
-    """
+    """Parse and validate the LLM's JSON response into Clip objects."""
     data = json.loads(raw_json)
     clips_data = data.get("clips", data) if isinstance(data, dict) else data
 
@@ -149,27 +124,6 @@ def _parse_clips(raw_json: str) -> list[Clip]:
 
     logger.info("Parsed %d clips from LLM response", len(clips))
     return clips
-
-
-def select_clips(transcript: dict, provider: str = "gemini") -> list[Clip]:
-    """
-    Route to the appropriate LLM provider for clip selection.
-
-    Args:
-        transcript: The word-level transcript dict.
-        provider: Either "gemini" or "openai".
-
-    Returns:
-        List of Clip objects sorted by virality_score descending.
-    """
-    if provider == "gemini":
-        clips = select_clips_gemini(transcript)
-    elif provider == "openai":
-        clips = select_clips_openai(transcript)
-    else:
-        raise ValueError(f"Unknown LLM provider: {provider}. Use 'gemini' or 'openai'.")
-
-    return sorted(clips, key=lambda c: c.virality_score, reverse=True)
 
 
 def save_clips(clips: list[Clip], output_path: Path) -> Path:

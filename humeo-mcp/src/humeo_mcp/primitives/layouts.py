@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from ..schemas import LayoutInstruction, LayoutKind
+from ..schemas import BoundingBox, FocusStackOrder, LayoutInstruction, LayoutKind
 
 
 # Source geometry assumption. Most podcast sources are 1920x1080; we still
@@ -37,6 +37,27 @@ class FilterPlan:
 
 def _clamp01(v: float) -> float:
     return max(0.0, min(1.0, v))
+
+
+def _bbox_to_crop_pixels(
+    box: BoundingBox, src_w: int, src_h: int
+) -> tuple[int, int, int, int]:
+    """Normalized bbox → (cw, ch, x, y) with even dimensions for ffmpeg."""
+    x1 = int(round(_clamp01(box.x1) * float(src_w)))
+    y1 = int(round(_clamp01(box.y1) * float(src_h)))
+    x2 = int(round(_clamp01(box.x2) * float(src_w)))
+    y2 = int(round(_clamp01(box.y2) * float(src_h)))
+    x1 = max(0, min(src_w - 2, x1))
+    y1 = max(0, min(src_h - 2, y1))
+    x2 = max(x1 + 2, min(src_w, x2))
+    y2 = max(y1 + 2, min(src_h, y2))
+    cw = x2 - x1
+    ch = y2 - y1
+    cw -= cw % 2
+    ch -= ch % 2
+    x1 -= x1 % 2
+    y1 -= y1 % 2
+    return max(2, cw), max(2, ch), x1, y1
 
 
 def _crop_box(
@@ -116,10 +137,16 @@ def plan_sit_center(
     src_w: int = DEFAULT_SRC_W,
     src_h: int = DEFAULT_SRC_H,
 ) -> FilterPlan:
-    """Thruster 2: 1-person sitting, centered, wider crop (zoom ~1.0)."""
+    """Thruster 2: 1-person sitting, centered, wider crop (zoom ~1.0).
+
+    Vertical crop center is slightly above mid-frame (0.48) so typical
+    lower-third / seated framing keeps faces higher in the 9:16 window.
+    """
 
     zoom = max(instruction.zoom, 1.0)
-    cw, ch, x, y = _center_crop_to_9x16(src_w, src_h, zoom, instruction.person_x_norm)
+    cw, ch, x, y = _crop_box(
+        src_w, src_h, 9 / 16, zoom, instruction.person_x_norm, 0.48
+    )
     fg = (
         f"[0:v]crop={cw}:{ch}:{x}:{y},"
         f"scale={out_w}:{out_h}:flags=lanczos,setsar=1[vout]"
@@ -139,10 +166,12 @@ def plan_split_chart_person(
 
     The 9:16 output stacks them vertically:
       top 60%  -> chart region scaled to full width
-      bottom 40% -> person region (zoomed in) scaled to full width
+      bottom 40% -> person region scaled to full width
 
-    Defaults place the chart split at x=0..(2/3)*src_w and person at the
-    remaining right third. Knobs let a smarter pilot override.
+    **Important:** When ``split_chart_region`` and ``split_person_region`` are set
+    (Gemini vision), those normalized rects define crops. Otherwise the chart and
+    person rectangles are **non-overlapping** strips of the source:
+    ``x in [0, left_split)`` for the chart and ``x in [left_split, src_w)`` for the person.
     """
 
     # Top band height (chart) and bottom band height (person).
@@ -151,33 +180,106 @@ def plan_split_chart_person(
     top_h -= top_h % 2
     bot_h = out_h - top_h
 
-    # Chart region in the source: left 2/3 by default.
-    chart_start_x = int(round(_clamp01(instruction.chart_x_norm) * src_w))
-    chart_end_x = int(round((2.0 / 3.0) * src_w))
-    if chart_end_x <= chart_start_x:
-        chart_end_x = min(src_w, chart_start_x + src_w // 2)
-    chart_w = (chart_end_x - chart_start_x) - ((chart_end_x - chart_start_x) % 2)
+    if instruction.split_chart_region and instruction.split_person_region:
+        chart_w, chart_h, chart_start_x, chart_y = _bbox_to_crop_pixels(
+            instruction.split_chart_region, src_w, src_h
+        )
+        person_w, person_h, person_x, person_y = _bbox_to_crop_pixels(
+            instruction.split_person_region, src_w, src_h
+        )
+        band_chart_top = (
+            f"[src1]crop={chart_w}:{chart_h}:{chart_start_x}:{chart_y},"
+            f"scale={out_w}:{top_h}:force_original_aspect_ratio=decrease,"
+            f"pad={out_w}:{top_h}:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1[top]"
+        )
+        band_chart_bot = (
+            f"[src1]crop={chart_w}:{chart_h}:{chart_start_x}:{chart_y},"
+            f"scale={out_w}:{bot_h}:force_original_aspect_ratio=decrease,"
+            f"pad={out_w}:{bot_h}:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1[cbot]"
+        )
+        band_person_top = (
+            f"[src2]crop={person_w}:{person_h}:{person_x}:{person_y},"
+            f"scale={out_w}:{top_h}:force_original_aspect_ratio=decrease,"
+            f"pad={out_w}:{top_h}:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1[ptop]"
+        )
+        band_person_bot = (
+            f"[src2]crop={person_w}:{person_h}:{person_x}:{person_y},"
+            f"scale={out_w}:{bot_h}:force_original_aspect_ratio=decrease,"
+            f"pad={out_w}:{bot_h}:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1[bot]"
+        )
+        if instruction.focus_stack_order == FocusStackOrder.CHART_THEN_PERSON:
+            fg = (
+                f"[0:v]split=2[src1][src2];"
+                f"{band_chart_top};"
+                f"{band_person_bot};"
+                f"[top][bot]vstack=inputs=2[vout]"
+            )
+        else:
+            fg = (
+                f"[0:v]split=2[src1][src2];"
+                f"{band_person_top};"
+                f"{band_chart_bot};"
+                f"[ptop][cbot]vstack=inputs=2[vout]"
+            )
+        return FilterPlan(filtergraph=fg)
+
+    # Vertical boundary between chart (left 2/3) and person (right 1/3).
+    left_split = int(round((2.0 / 3.0) * float(src_w)))
+    left_split -= left_split % 2
+    left_split = max(2, min(src_w - 2, left_split))
+
+    # Chart: only the left region. ``chart_x_norm`` trims from the left edge [0, left_split).
+    chart_start_x = int(round(_clamp01(instruction.chart_x_norm) * float(left_split)))
+    chart_start_x -= chart_start_x % 2
+    chart_start_x = max(0, min(left_split - 2, chart_start_x))
+    chart_w = left_split - chart_start_x
+    chart_w -= chart_w % 2
     chart_h = src_h - (src_h % 2)
 
-    # Person region: centered on person_x_norm, width = 1/3 of src, full height.
-    person_w = int(round(src_w / 3.0))
-    person_w -= person_w % 2
-    person_cx = int(round(_clamp01(instruction.person_x_norm) * src_w))
-    person_x = max(0, min(src_w - person_w, person_cx - person_w // 2))
+    # Person: only the right third — never overlaps the chart strip.
+    person_x = left_split
     person_x -= person_x % 2
+    person_w = src_w - person_x
+    person_w -= person_w % 2
     person_h = src_h - (src_h % 2)
 
-    fg = (
-        # top band: crop chart -> scale to fill top_w x top_h via pad-or-fit
-        f"[0:v]split=2[src1][src2];"
+    band_chart_top = (
         f"[src1]crop={chart_w}:{chart_h}:{chart_start_x}:0,"
         f"scale={out_w}:{top_h}:force_original_aspect_ratio=decrease,"
-        f"pad={out_w}:{top_h}:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1[top];"
-        f"[src2]crop={person_w}:{person_h}:{person_x}:0,"
-        f"scale={out_w}:{bot_h}:force_original_aspect_ratio=increase,"
-        f"crop={out_w}:{bot_h},setsar=1[bot];"
-        f"[top][bot]vstack=inputs=2[vout]"
+        f"pad={out_w}:{top_h}:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1[top]"
     )
+    band_chart_bot = (
+        f"[src1]crop={chart_w}:{chart_h}:{chart_start_x}:0,"
+        f"scale={out_w}:{bot_h}:force_original_aspect_ratio=decrease,"
+        f"pad={out_w}:{bot_h}:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1[cbot]"
+    )
+    # Match chart bands: decrease + pad (avoids "zoomed" crop that duplicated chart look).
+    band_person_top = (
+        f"[src2]crop={person_w}:{person_h}:{person_x}:0,"
+        f"scale={out_w}:{top_h}:force_original_aspect_ratio=decrease,"
+        f"pad={out_w}:{top_h}:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1[ptop]"
+    )
+    band_person_bot = (
+        f"[src2]crop={person_w}:{person_h}:{person_x}:0,"
+        f"scale={out_w}:{bot_h}:force_original_aspect_ratio=decrease,"
+        f"pad={out_w}:{bot_h}:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1[bot]"
+    )
+
+    if instruction.focus_stack_order == FocusStackOrder.CHART_THEN_PERSON:
+        fg = (
+            f"[0:v]split=2[src1][src2];"
+            f"{band_chart_top};"
+            f"{band_person_bot};"
+            f"[top][bot]vstack=inputs=2[vout]"
+        )
+    else:
+        fg = (
+            f"[0:v]split=2[src1][src2];"
+            f"{band_person_top};"
+            f"{band_chart_bot};"
+            f"[ptop][cbot]vstack=inputs=2[vout]"
+        )
+
     return FilterPlan(filtergraph=fg)
 
 

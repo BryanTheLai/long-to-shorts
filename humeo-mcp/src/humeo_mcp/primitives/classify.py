@@ -108,29 +108,41 @@ def _classify_one_heuristic(keyframe_path: str | None) -> SceneClassification:
 
     grid, w, h = gs
     cols = _column_profile(grid)
-    # Split into left / right halves. If the left half is visually very
-    # different from the right half (high between-half variance vs low
-    # within-half variance) → probably a chart-vs-person split scene.
-    mid = w // 2
-    left = cols[:mid]
-    right = cols[mid:]
-    left_mean = sum(left) / max(1, len(left))
-    right_mean = sum(right) / max(1, len(right))
-    left_var = _variance(left)
-    right_var = _variance(right)
-    between = (left_mean - right_mean) ** 2
-    within = (left_var + right_var) / 2.0 + 1e-6
 
-    split_score = between / within  # high → likely split layout
+    def _split_contrast(left: list[float], right: list[float]) -> float:
+        lm = sum(left) / max(1, len(left))
+        rm = sum(right) / max(1, len(right))
+        lv = _variance(left)
+        rv = _variance(right)
+        between = (lm - rm) ** 2
+        within = (lv + rv) / 2.0 + 1e-6
+        return between / within
+
+    # Left/right halves — good for symmetric two-up scenes.
+    mid = max(1, w // 2)
+    split_halves = _split_contrast(cols[:mid], cols[mid:])
+
+    # Left 2/3 vs right 1/3 — matches explainer slides (chart + talking head).
+    t = max(1, w // 3)
+    left_two_thirds = cols[: 2 * t]
+    right_one_third = cols[2 * t :]
+    split_thirds = _split_contrast(left_two_thirds, right_one_third)
+
+    split_score = max(split_halves, split_thirds)
     # Overall column variance: low variance → flat composition (zoom call).
     overall_var = _variance(cols)
 
-    if split_score > 25.0:
+    # Threshold tuned on Ark-style 2/3 chart + 1/3 speaker; "thirds" score catches
+    # layouts where half-vs-half contrast was too weak (e.g. clip 005 vs 004).
+    if split_score > 20.0:
         return SceneClassification(
             scene_id="?",
             layout=LayoutKind.SPLIT_CHART_PERSON,
             confidence=min(0.95, 0.5 + split_score / 200.0),
-            reason=f"left/right halves differ strongly (score={split_score:.1f})",
+            reason=(
+                f"chart/person contrast (halves={split_halves:.1f}, "
+                f"thirds={split_thirds:.1f} → max={split_score:.1f})"
+            ),
         )
     if overall_var < 100.0:
         return SceneClassification(
