@@ -1,12 +1,12 @@
 """Map LLM clip timing (segment + trim + hook) to one ffmpeg source window.
 
-``humeo_mcp.primitives.compile`` already cuts with ``-ss`` / ``-t`` from ``Clip``;
+``humeo_core.primitives.compile`` already cuts with ``-ss`` / ``-t`` from ``Clip``;
 this module is the single place that turns trim/hook fields into concrete bounds.
 """
 
 from __future__ import annotations
 
-from humeo_mcp.schemas import Clip
+from humeo_core.schemas import Clip
 
 
 def effective_export_bounds(clip: Clip) -> tuple[float, float]:

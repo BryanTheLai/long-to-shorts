@@ -1,7 +1,7 @@
 """Tests for trim/hook → ffmpeg source window."""
 
 from humeo.render_window import clip_for_render, effective_export_bounds
-from humeo_mcp.schemas import Clip
+from humeo_core.schemas import Clip
 
 
 def _clip(**kwargs) -> Clip:

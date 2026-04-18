@@ -1367,7 +1367,7 @@ version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "google-genai" },
-    { name = "humeo-mcp" },
+    { name = "humeo-core" },
     { name = "jinja2" },
     { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
     { name = "numpy", version = "2.4.4", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
@@ -1390,7 +1390,7 @@ whisper = [
 [package.metadata]
 requires-dist = [
     { name = "google-genai", specifier = ">=1.0" },
-    { name = "humeo-mcp", editable = "humeo-mcp" },
+    { name = "humeo-core", editable = "humeo-core" },
     { name = "jinja2", specifier = ">=3.1" },
     { name = "numpy", specifier = ">=1.24" },
     { name = "openai", specifier = ">=1.0" },
@@ -1405,9 +1405,9 @@ requires-dist = [
 provides-extras = ["dev", "whisper"]
 
 [[package]]
-name = "humeo-mcp"
+name = "humeo-core"
 version = "0.1.0"
-source = { editable = "humeo-mcp" }
+source = { editable = "humeo-core" }
 dependencies = [
     { name = "mcp", extra = ["cli"] },
     { name = "pydantic" },

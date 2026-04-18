@@ -1,10 +1,10 @@
 import json
 
-from humeo_mcp.primitives.classify import (
+from humeo_core.primitives.classify import (
     classify_scenes_heuristic,
     classify_scenes_with_llm,
 )
-from humeo_mcp.schemas import LayoutKind, Scene
+from humeo_core.schemas import LayoutKind, Scene
 
 
 def test_heuristic_no_keyframe_defaults_sit_center():

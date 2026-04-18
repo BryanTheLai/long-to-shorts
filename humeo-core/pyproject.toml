@@ -3,9 +3,9 @@ requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "humeo-mcp"
+name = "humeo-core"
 version = "0.1.0"
-description = "Reusable-rocket MCP server for long-video-to-shorts editing. Deterministic primitives + 5 fixed 9:16 layouts."
+description = "Humeo core library: strict schemas, deterministic ffmpeg 9:16 layouts, optional MCP server (humeo-core / humeo-mcp entrypoints)."
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
@@ -31,7 +31,9 @@ vision = ["Pillow>=10.0"]
 dev = ["pytest>=7", "pytest-asyncio>=0.23", "Pillow>=10.0"]
 
 [project.scripts]
-humeo-mcp = "humeo_mcp.server:main"
+humeo-core = "humeo_core.server:main"
+# Backward-compatible entry point (same module); existing MCP configs may still call `humeo-mcp`.
+humeo-mcp = "humeo_core.server:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

@@ -1,7 +1,7 @@
 """layout_vision parsing (no API calls)."""
 
 from humeo.layout_vision import _instruction_from_gemini_json
-from humeo_mcp.schemas import LayoutKind
+from humeo_core.schemas import LayoutKind
 
 
 def test_instruction_from_gemini_json_split_with_bboxes():

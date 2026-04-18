@@ -74,7 +74,7 @@ Work directory **`work_dir`** defaults to `<HUMEO_CACHE_ROOT>/videos/<video_id>/
 
 **Expected JSON shape (clip selection)**
 
-Top-level object with `"clips": [ ... ]` (or a bare array — parser accepts both). Each item validates as `humeo_mcp.schemas.Clip`. See `clip_selection_system.jinja2` for the canonical schema (fields include `clip_id`, `start_time_sec`, `end_time_sec`, `virality_score`, `transcript`, `layout_hint`, trim/hook fields, etc.).
+Top-level object with `"clips": [ ... ]` (or a bare array — parser accepts both). Each item validates as `humeo_core.schemas.Clip`. See `clip_selection_system.jinja2` for the canonical schema (fields include `clip_id`, `start_time_sec`, `end_time_sec`, `virality_score`, `transcript`, `layout_hint`, trim/hook fields, etc.).
 
 **Constants (from `humeo.config`)**
 
@@ -92,7 +92,7 @@ Top-level object with `"clips": [ ... ]` (or a bare array — parser accepts bot
 ### 3a — Keyframes
 
 - Build `Scene` list: `scene_id = clip.clip_id`, `start_time` / `end_time` from `clip_for_render(clip)` window (`humeo.render_window`).
-- `humeo_mcp.primitives.ingest.extract_keyframes(source_video, scenes, keyframes_dir)` writes images under **`work_dir/keyframes/`** and sets `Scene.keyframe_path`.
+- `humeo_core.primitives.ingest.extract_keyframes(source_video, scenes, keyframes_dir)` writes images under **`work_dir/keyframes/`** and sets `Scene.keyframe_path`.
 
 ### 3b — Layout vision (Gemini)
 
@@ -133,7 +133,7 @@ Top-level object with `"clips": [ ... ]` (or a bare array — parser accepts bot
 
 - `layout` → `LayoutKind` (invalid string → `sit_center`).
 - Bboxes parsed with `BoundingBox.model_validate` (Pydantic).
-- `layout_instruction_from_regions` sets `person_x_norm` / `chart_x_norm` from bbox centers/edges (`humeo_mcp.primitives.vision`).
+- `layout_instruction_from_regions` sets `person_x_norm` / `chart_x_norm` from bbox centers/edges (`humeo_core.primitives.vision`).
 - If `layout == split_chart_person` **and** both `person_bbox` and `chart_bbox` are non-null, **`split_chart_region`** = chart box and **`split_person_region`** = person box (normalized rects for ffmpeg split planner).
 
 **Failures**
@@ -148,7 +148,7 @@ Top-level object with `"clips": [ ... ]` (or a bare array — parser accepts bot
 | `layout_vision.meta.json` | `transcript_sha256`, `clips_sha256`, `gemini_vision_model` |
 | `layout_vision.json` | `{ "clips": { "<clip_id>": { "instruction": <LayoutInstruction JSON>, "raw": <Gemini JSON or error> } } }` |
 
-**Note:** `humeo_mcp.primitives.vision.classify_from_regions` (bbox heuristics) exists for **MCP / other callers**. The **product pipeline** uses the vision model’s **`layout` field** plus bboxes as above, not pixel heuristics for layout choice.
+**Note:** `humeo_core.primitives.vision.classify_from_regions` (bbox heuristics) exists for **MCP / other callers**. The **product pipeline** uses the vision model’s **`layout` field** plus bboxes as above, not pixel heuristics for layout choice.
 
 ---
 
@@ -163,7 +163,7 @@ For each clip:
 5. If `output_dir/short_<clip_id>.mp4` exists → skip render (log only).
 6. Else `reframe_clip_ffmpeg(..., layout_instruction=instr, ...)`.
 
-**Adapter:** `humeo.reframe_ffmpeg` builds `RenderRequest` with full `LayoutInstruction` and calls `humeo_mcp.primitives.compile.render_clip`.
+**Adapter:** `humeo.reframe_ffmpeg` builds `RenderRequest` with full `LayoutInstruction` and calls `humeo_core.primitives.compile.render_clip`.
 
 **Video geometry defaults** (`humeo.config`)
 
@@ -171,7 +171,7 @@ For each clip:
 
 **Layout → ffmpeg**
 
-- `humeo_mcp.primitives.layouts.plan_layout` dispatches on `LayoutKind`.
+- `humeo_core.primitives.layouts.plan_layout` dispatches on `LayoutKind`.
 - **Split:** If `split_chart_region` and `split_person_region` are set, crops use **`_bbox_to_crop_pixels`** (normalized → even pixel crop). Otherwise split uses fixed **2/3 | 1/3** vertical strip math + `chart_x_norm` trim.
 - **Zoom / sit:** Center crops use `person_x_norm` (and vertical center 0.5 vs 0.48 for sit).
 

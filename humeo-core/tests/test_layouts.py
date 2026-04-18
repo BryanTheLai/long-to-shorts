@@ -1,11 +1,11 @@
 import re
 
-from humeo_mcp.primitives.layouts import (
+from humeo_core.primitives.layouts import (
     _center_crop_to_9x16,
     _crop_box,
     plan_layout,
 )
-from humeo_mcp.schemas import (
+from humeo_core.schemas import (
     BoundingBox,
     FocusStackOrder,
     LayoutInstruction,
@@ -241,7 +241,7 @@ def test_split_bands_use_cover_scale_plus_center_crop():
 
 
 def test_zoom_tighter_means_smaller_crop_window():
-    from humeo_mcp.primitives.layouts import plan_zoom_call_center
+    from humeo_core.primitives.layouts import plan_zoom_call_center
 
     wide = plan_zoom_call_center(
         LayoutInstruction(clip_id="c", layout=LayoutKind.ZOOM_CALL_CENTER, zoom=1.0),

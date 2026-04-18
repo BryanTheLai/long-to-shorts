@@ -10,8 +10,8 @@ Takes a long podcast/interview video (YouTube URL or local MP4) and produces mul
 
 Two cooperating Python packages:
 
-- **`humeo-mcp/`** — Reusable deterministic primitives + strict JSON schemas, exposed as MCP tools. Treats editing as a composable pipeline of narrow, testable functions.
-- **`src/humeo/`** — Thin end-to-end product wrapper. It handles download, transcript, clip selection, subtitle generation, then delegates final rendering to `humeo-mcp`.
+- **`humeo-core/`** (import `humeo_core`) — Reusable deterministic primitives + strict JSON schemas, exposed as MCP tools. Treats editing as a composable pipeline of narrow, testable functions. The `humeo-mcp` console script is still registered as an **alias** for existing MCP configs.
+- **`src/humeo/`** — Thin end-to-end product wrapper. It handles download, transcript, clip selection, subtitle generation, then delegates final rendering to `humeo-core`.
 
 Design spine: HIVE (ByteDance, 2507.02790v1). See `PAPER_BREAKDOWN.md` for the first-principles write-up.
 
@@ -24,11 +24,11 @@ Design spine: HIVE (ByteDance, 2507.02790v1). See `PAPER_BREAKDOWN.md` for the f
 | 1 | Transcripts alone produce bad cuts (mid-sentence, abrupt, no visual context).            | Scene segmentation + keyframes first, then LLM reasons over scene narratives.            | HIVE §3.1. Cuts land on semantic boundaries, not word boundaries.                     |
 | 2 | Single-LLM "pick 5 shorts from this transcript" gives incoherent output.                 | Decomposed editing: highlight / opening-ending / pruning as separate narrow tool calls.  | HIVE §3.2. LLMs fail softly on vague tasks, sharply on narrow ones.                   |
 | 3 | Free-form LLM JSON breaks downstream code.                                               | Pydantic schemas at every hop. Every primitive reads and writes strict types.            | Makes failures loud and early. Tests don't need video fixtures.                       |
-| 4 | The repo had two overlapping runtime paths. | Kept one primary render path: `src/humeo` now wraps `humeo-mcp`'s ffmpeg renderer. | Less code, less duplication, clearer ownership.                                       |
+| 4 | The repo had two overlapping runtime paths. | Kept one primary render path: `src/humeo` now wraps `humeo-core`'s ffmpeg renderer. | Less code, less duplication, clearer ownership.                                       |
 | 5 | How to decide *per-clip* whether to use `zoom_call_center`, `sit_center`, or `split_chart_person`? | Multiple swappable detectors, all emitting the same `SceneRegions` bbox schema.         | Detector is an impl detail. Layout planner and renderer are unchanged.                |
 | 6 | Face-tracking in Python per-frame is slow and brittle.                                   | Detect once per scene keyframe, apply one ffmpeg filtergraph per clip.                   | O(scenes) model calls instead of O(frames). Renders deterministic.                   |
 | 7 | MCP server didn't even import on installed `mcp 1.1.2`.                                  | Bumped to `mcp[cli]>=1.2.0`; `test_server_tools.py` now runs clean.                      | Pre-existing bug. Fixed while we were here.                                           |
-| 8 | `Clip` dataclass existed in two places with subtly different fields.                     | Made Pydantic `Clip` in `humeo_mcp.schemas` the single source of truth.                  | One type, one validation, one JSON shape.                                             |
+| 8 | `Clip` dataclass existed in two places with subtly different fields.                     | Made Pydantic `Clip` in `humeo_core.schemas` the single source of truth.                  | One type, one validation, one JSON shape.                                             |
 | 9 | `__pycache__/`, `egg-info/` were being committed.                                        | Added `.gitignore`, staged clean-up.                                                     | Stops polluting the repo history.                                                    |
 
 ---
@@ -89,18 +89,18 @@ Translated into a clean primitive:
 
 This is now implemented in three files:
 
-- `humeo-mcp/src/humeo_mcp/schemas.py` — `BoundingBox` + `SceneRegions` Pydantic models.
-- `humeo-mcp/src/humeo_mcp/primitives/vision.py` — the primitive itself:
+- `humeo-core/src/humeo_core/schemas.py` — `BoundingBox` + `SceneRegions` Pydantic models.
+- `humeo-core/src/humeo_core/primitives/vision.py` — the primitive itself:
   - `REGION_PROMPT` — the exact prompt sent to the LLM, forcing strict JSON.
   - `detect_regions_with_llm(scenes, vision_fn)` — pluggable. Caller supplies the model.
   - `classify_from_regions(regions)` — bbox geometry → `LayoutKind` + confidence.
   - `layout_instruction_from_regions(regions, classification)` — bbox geometry → `LayoutInstruction` with `person_x_norm` / `chart_x_norm` populated.
   - `classify_scenes_with_vision_llm` — one-shot helper.
-- `humeo-mcp/src/humeo_mcp/server.py` — MCP tools:
+- `humeo-core/src/humeo_core/server.py` — MCP tools:
   - `humeo.detect_scene_regions` — returns the prompt and per-scene jobs so the agent can run its own vision model.
   - `humeo.classify_scenes_with_vision` — takes the agent's bbox JSON back and returns `SceneClassification` + `LayoutInstruction`.
 
-Validated by 15 tests in `humeo-mcp/tests/test_vision.py` plus 2 server-tool tests.
+Validated by 15 tests in `humeo-core/tests/test_vision.py` plus 2 server-tool tests.
 
 ### Why this shape (and not "run MediaPipe in a loop")
 
@@ -130,11 +130,11 @@ This is the **Comprehensive Caption** module (§3.1.5) specialized for layout, p
 ### 5.2 "Run MediaPipe on every frame"
 **Rejected as the primary product path.** Good for smooth tracking, bad for code simplicity, slow on CPU, and redundant once the engine owned the stable ffmpeg renderer.
 
-### 5.3 "Merge `src/humeo/` into `humeo-mcp/`"
-**Rejected.** Disruptive. The two packages have different surfaces (CLI orchestrator vs MCP server). Clean dependency edge (`humeo` → `humeo-mcp`) is enough.
+### 5.3 "Merge `src/humeo/` into `humeo-core/`"
+**Rejected.** Disruptive. The two packages have different surfaces (CLI orchestrator vs MCP server). Clean dependency edge (`humeo` → `humeo-core`) is enough.
 
-### 5.4 "Merge `humeo-mcp/` into `src/humeo/`"
-**Rejected.** `humeo-mcp` is independently useful for any MCP client (Cursor, Claude Desktop). Burying it inside the podcast pipeline kills that value.
+### 5.4 "Merge `humeo-core/` into `src/humeo/`"
+**Rejected.** `humeo-core` is independently useful for any MCP client (Cursor, Claude Desktop). Burying it inside the podcast pipeline kills that value.
 
 ### 5.5 "Hard-code the vision LLM to Gemini (or OpenAI)"
 **Rejected.** The vision primitive takes `LLMRegionFn = Callable[[str, str], str]`. Caller supplies the provider. Tests pass stubs. Swap at runtime.
@@ -143,7 +143,7 @@ This is the **Comprehensive Caption** module (§3.1.5) specialized for layout, p
 **Rejected.** HIVE §8 explicitly warns against this for the podcast-to-shorts scope. Three-branch rule-based classification (via bboxes) gets us to ship quality with zero training data.
 
 ### 5.7 "Use MediaPipe face bbox → `SceneRegions` too"
-**Kept.** `humeo-mcp/src/humeo_mcp/primitives/face_detect.py` is the local CPU detector that emits the same `SceneRegions` schema as the LLM path. All three detectors (heuristic, MediaPipe, LLM) are interchangeable.
+**Kept.** `humeo-core/src/humeo_core/primitives/face_detect.py` is the local CPU detector that emits the same `SceneRegions` schema as the LLM path. All three detectors (heuristic, MediaPipe, LLM) are interchangeable.
 
 ### 5.8 "Run pruning as a fourth sub-task"
 **Pending.** HIVE Module B has three sub-tasks (highlight / boundary / pruning). We do highlight and boundary today. Pruning is a one-prompt extension that can sit between Stage 2 (clip select) and Stage 3 (cut).
@@ -154,17 +154,18 @@ This is the **Comprehensive Caption** module (§3.1.5) specialized for layout, p
 
 1. **Staged uncommitted `src/humeo/` noticed.** Ran `git status`, `git log --all --oneline`, `git branch -a`. Confirmed `main`, `origin/cursor/*` all merged; `src/humeo/` was uncommitted parallel work.
 2. **Added `.gitignore`.** Python cache, egg-info, `.humeo_work/`, `output/`, IDE files, secrets. Unstaged the committed cache.
-3. **Deduplicated `Clip`.** `src/humeo/clip_selector.py` now imports `Clip` / `ClipPlan` from `humeo_mcp.schemas`. `cutter.py`, `pipeline.py` updated too. `_parse_clips` gracefully strips `duration_sec` (computed property in Pydantic) from LLM JSON before validation.
+3. **Deduplicated `Clip`.** `src/humeo/clip_selector.py` now imports `Clip` / `ClipPlan` from `humeo_core.schemas`. `cutter.py`, `pipeline.py` updated too. `_parse_clips` gracefully strips `duration_sec` (computed property in Pydantic) from LLM JSON before validation.
 4. **Added `BoundingBox` + `SceneRegions`.** Pydantic models with validators (`x2 > x1`, `y2 > y1`). Computed properties `center_x`, `center_y`, `width`. Normalized coords keep the schema resolution-independent.
 5. **Implemented `primitives/vision.py`.** `LLMRegionFn`, `REGION_PROMPT`, `detect_regions_with_llm`, `classify_from_regions`, `layout_instruction_from_regions`, `classify_scenes_with_vision_llm`. Every parse failure degrades to an empty `SceneRegions` with `raw_reason` — never raises.
 6. **Exposed two new MCP tools.** `detect_scene_regions` (returns prompt + jobs) and `classify_scenes_with_vision` (takes bbox JSON back, returns classifications + `LayoutInstruction`s). Deterministic — server never calls an LLM itself, agent does.
 7. **Added `primitives/face_detect.py`.** MediaPipe path that emits `SceneRegions`. Uses a pluggable `FaceBBoxFn` so tests don't need MediaPipe installed. Synthesizes a chart bbox when the face is pushed right of `chart_split_threshold` (matches the original `reframe.py` heuristic).
 8. **Wrote 21 new tests.** `test_vision.py` (15), `test_face_detect.py` (6), plus 2 new server-tool tests. All pass.
 9. **Fixed pre-existing MCP import bug.** `from mcp.server.fastmcp import FastMCP` didn't exist in `mcp 1.1.2`. Bumped to `mcp[cli]>=1.2.0`; upgraded installed copy; `test_server_tools.py` now collects and runs.
-10. **Made `src/humeo/reframe_ffmpeg.py` the only product render path.** It is now a thin adapter that builds a `LayoutInstruction` from the shared `Clip` schema and calls `humeo_mcp.primitives.compile.render_clip`.
-11. **Collapsed the root pipeline.** Removed the extra cut/reframe/finish pass. The product pipeline now does: download → transcript → clip select → SRT → final render.
-12. **Wired top-level pytest.** Root `pyproject.toml` now has `testpaths = ["tests", "humeo-mcp/tests"]`. `tests/test_reframe_ffmpeg.py` covers the adapter.
+10. **Made `src/humeo/reframe_ffmpeg.py` the only product render path.** It is now a thin adapter that builds a `LayoutInstruction` from the shared `Clip` schema and calls `humeo_core.primitives.compile.render_clip`.
+11. **Collapsed the root pipeline.** Removed the extra cut/reframe/finish pass. The product pipeline now does: download → transcript → clip select → ASS captions → final render.
+12. **Wired top-level pytest.** Root `pyproject.toml` now has `testpaths = ["tests", "humeo-core/tests"]`. `tests/test_reframe_ffmpeg.py` covers the adapter.
 13. **Ran ruff --fix.** Removed dead imports and kept the suite green.
+14. **Renamed package folder `humeo-mcp/` → `humeo-core/`** and Python package `humeo_mcp` → `humeo_core`. PyPI/local project name is `humeo-core`. Console entry points: **`humeo-core`** (primary) and **`humeo-mcp`** (same `main()`, for backward-compatible MCP client configs).
 
 ---
 
@@ -173,20 +174,20 @@ This is the **Comprehensive Caption** module (§3.1.5) specialized for layout, p
 ```
 humeo-bring-home-work-v1/
 ├── .gitignore                   ← new, repo-wide ignores
-├── pyproject.toml               ← humeo package, now depends on humeo-mcp; pytest wired
+├── pyproject.toml               ← humeo package, now depends on humeo-core; pytest wired
 ├── tests/
-│   └── test_reframe_ffmpeg.py   ← new, 5 tests for the adapter
+│   └── test_reframe_ffmpeg.py   ← adapter tests for reframe → compile
 ├── src/humeo/                   ← thin product wrapper
 │   ├── cli.py
-│   ├── clip_selector.py         ← uses Pydantic Clip from humeo-mcp
+│   ├── clip_selector.py         ← uses Pydantic Clip from humeo-core
 │   ├── config.py                ← minimal product config
 │   ├── cutter.py                ← subtitle generation only
 │   ├── ingest.py
 │   ├── pipeline.py              ← download → transcript → select → SRT → render
-│   └── reframe_ffmpeg.py        ← thin adapter into humeo-mcp render primitive
-├── humeo-mcp/                   ← reusable deterministic primitives
+│   └── reframe_ffmpeg.py        ← thin adapter into humeo-core render primitive
+├── humeo-core/                   ← reusable deterministic primitives
 │   ├── pyproject.toml           ← mcp[cli]>=1.2.0, new [face]/[vision]/[dev] extras
-│   ├── src/humeo_mcp/
+│   ├── src/humeo_core/
 │   │   ├── __init__.py          ← exports BoundingBox, SceneRegions
 │   │   ├── server.py            ← adds detect_scene_regions, classify_scenes_with_vision
 │   │   ├── schemas.py           ← + BoundingBox, SceneRegions
@@ -198,29 +199,45 @@ humeo-bring-home-work-v1/
 │   │       ├── layouts.py       ← 5 fixed 9:16 filtergraphs (max 2 items)
 │   │       ├── select_clips.py  ← density-based clip picker
 │   │       └── vision.py        ← new, vision-LLM + OCR → SceneRegions
-│   └── tests/                   ← 53 tests, all green
+│   └── tests/                   ← 75 tests (package primitives + MCP surface)
 └── docs/
     ├── hive_paper_blunt_guide.md (prior)
-    ├── PAPER_BREAKDOWN.md       ← new, full first-principles paper breakdown
+    ├── PAPER_BREAKDOWN.md       ← full first-principles paper breakdown
+    ├── PIPELINE.md              ← product `run_pipeline` stages + caches
+    ├── STUDY_ORDER.md           ← suggested reading order (e.g. one-day prep)
     └── SOLUTIONS.md             ← this file
 ```
 
 ---
 
-## 8. Test inventory (58 passing)
+## 8. Test inventory (119 passing, root + humeo-core)
 
-| File                                    | Tests | What it covers                                       |
-|-----------------------------------------|------:|------------------------------------------------------|
-| `humeo-mcp/tests/test_schemas.py`       | 5     | Pydantic validation across all schemas               |
-| `humeo-mcp/tests/test_layouts.py`       | 10    | The 3 filtergraphs for 9:16 rendering                |
-| `humeo-mcp/tests/test_classify.py`      | 3     | Pixel-heuristic scene classifier                     |
-| `humeo-mcp/tests/test_face_detect.py`   | 6     | MediaPipe-path bbox primitive (stubbed fn)           |
-| `humeo-mcp/tests/test_vision.py`        | 15    | Vision-LLM + OCR bbox primitive                      |
-| `humeo-mcp/tests/test_select_clips.py`  | 3     | Density-based clip picker                            |
-| `humeo-mcp/tests/test_compile.py`       | 4     | ffmpeg command builder + dry-run                     |
-| `humeo-mcp/tests/test_server_tools.py`  | 7     | MCP tool surface end-to-end                          |
-| `tests/test_reframe_ffmpeg.py`          | 5     | `humeo` → `humeo-mcp` ffmpeg reframer adapter        |
-| **Total**                               | **58**| All green on Windows/Python 3.12.                    |
+Run `uv run pytest` from the repo root (`testpaths` includes `tests` and `humeo-core/tests`).
+
+| Location | Tests | What it covers |
+|----------|------:|----------------|
+| `humeo-core/tests/test_schemas.py` | 10 | Pydantic validation across schemas |
+| `humeo-core/tests/test_layouts.py` | 21 | 9:16 layout filtergraphs |
+| `humeo-core/tests/test_layout_bbox.py` | 1 | Split bbox crop planning |
+| `humeo-core/tests/test_classify.py` | 3 | Pixel-heuristic scene classifier |
+| `humeo-core/tests/test_face_detect.py` | 6 | MediaPipe → `SceneRegions` (stubbed) |
+| `humeo-core/tests/test_vision.py` | 15 | Vision LLM + OCR bbox primitive |
+| `humeo-core/tests/test_select_clips.py` | 3 | Density-based clip picker |
+| `humeo-core/tests/test_compile.py` | 9 | ffmpeg command builder + dry-run |
+| `humeo-core/tests/test_server_tools.py` | 7 | MCP tool surface |
+| **Subtotal `humeo-core/tests`** | **75** | |
+| `tests/test_ass_subtitles.py` | 6 | ASS subtitle formatting |
+| `tests/test_clip_selection_cache.py` | 5 | Clip selection cache |
+| `tests/test_clip_selector.py` | 6 | Gemini clip parsing |
+| `tests/test_ingest_openai_chunks.py` | 5 | Ingest chunk handling |
+| `tests/test_layout_vision_unit.py` | 2 | Layout vision helpers |
+| `tests/test_prompt_loader.py` | 1 | Jinja prompt loading |
+| `tests/test_reframe_ffmpeg.py` | 4 | `humeo` → `humeo_core.compile` adapter |
+| `tests/test_render_window.py` | 3 | Trim → export window |
+| `tests/test_transcript_align.py` | 3 | Word align into clip timeline |
+| `tests/test_video_cache.py` | 9 | Video cache / work dir |
+| **Subtotal `tests/`** | **44** | |
+| **Total** | **119** | |
 
 ---
 
@@ -244,9 +261,9 @@ Anyone editing this repo in the future: don't violate these.
 2. **Every primitive is one file, one job.** No god-modules.
 3. **All bbox coordinates are normalized [0, 1].** Never pixels.
 4. **Detectors are swappable; renderer is fixed.** If you add a fourth detector, it must emit `SceneRegions`.
-5. **Keep the product wrapper thin.** New reusable media logic belongs in `humeo-mcp`, not in `src/humeo`.
+5. **Keep the product wrapper thin.** New reusable media logic belongs in `humeo-core`, not in `src/humeo`.
 6. **Cache aggressively.** `.humeo_work/` stores scene timestamps, transcripts, keyframes. Retries re-run model calls only.
-7. **Schemas live in `humeo_mcp.schemas`. One source of truth.**
+7. **Schemas live in `humeo_core.schemas`. One source of truth.**
 
 ---
 

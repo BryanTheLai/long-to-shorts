@@ -1,6 +1,6 @@
 import pytest
 
-from humeo_mcp.schemas import (
+from humeo_core.schemas import (
     Clip,
     ClipPlan,
     ClipSubtitleWords,

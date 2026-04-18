@@ -5,7 +5,7 @@ Turn a long podcast/interview into vertical shorts.
 Bluntly:
 
 - `src/humeo/` is the product wrapper. It downloads a YouTube video, transcribes it, asks an LLM for the best clips, and renders final shorts.
-- `humeo-mcp/` is the reusable engine. It owns the shared schemas, ffmpeg layout math, and MCP server.
+- `humeo-core/` is the reusable engine. It owns the shared schemas, ffmpeg layout math, and MCP server.
 
 If you are confused by the two folders, that is the difference. One is the app. One is the engine.
 
@@ -29,14 +29,15 @@ term used in code and docs (subject, crop, band, seam, bbox, etc.).
 
 For normal use:
 
-- `humeo`
-- `humeo-mcp`
+- `humeo` (CLI)
+- `humeo-core` (Python package + MCP server command)
+- `docs/STUDY_ORDER.md` — **start here** if you have one day to learn the repo
+- `docs/PIPELINE.md` — stages, caches, Gemini contracts
 - `docs/ENVIRONMENT.md` (API keys, cache dirs, model name)
-- `docs/PAPER_BREAKDOWN.md`
-- `docs/SOLUTIONS.md`
+- `docs/PAPER_BREAKDOWN.md` and `docs/SOLUTIONS.md`
 - `docs/TARGET_VIDEO_ANALYSIS.md`
 
-Everything else in `docs/` is supporting context or older notes.
+Everything else in `docs/` is supporting context or backlog notes.
 
 ## Install
 
@@ -68,11 +69,11 @@ src/humeo/
   clip_selection_cache.py transcript hash + clips.meta.json / raw LLM output
   render_window.py       trim/hook → single ffmpeg source window
   cutter.py         subtitle generation
-  reframe_ffmpeg.py thin adapter into humeo-mcp
+  reframe_ffmpeg.py thin adapter into humeo-core
   config.py         product config
 
-humeo-mcp/
-  src/humeo_mcp/
+humeo-core/
+  src/humeo_core/
     schemas.py
     server.py
     primitives/
@@ -91,17 +92,18 @@ humeo-mcp/
 YouTube URL
   -> download
   -> transcript
-  -> clip selection
-  -> midpoint keyframe per chosen clip
-  -> heuristic layout classification
-  -> subtitle generation
-  -> humeo-mcp render primitive
+  -> clip selection (Gemini text → clips.json)
+  -> keyframe per clip + layout vision (Gemini vision → LayoutInstruction)
+  -> ASS subtitle generation
+  -> humeo-core render primitive (ffmpeg)
   -> final 9:16 MP4s
 ```
 
 ## Docs
 
-- `docs/PAPER_BREAKDOWN.md`: the HIVE paper, explained clearly.
+- `docs/STUDY_ORDER.md`: recommended reading order (e.g. one-day prep).
+- `docs/PIPELINE.md`: exact stage and cache behavior for `run_pipeline`.
+- `docs/PAPER_BREAKDOWN.md`: the HIVE paper, explained clearly (see §9 for file mapping).
 - `docs/SOLUTIONS.md`: why the repo is shaped this way.
 - `docs/TARGET_VIDEO_ANALYSIS.md`: why the Cathie Wood video is the right test case.
 

@@ -1,7 +1,7 @@
 """Split layout uses optional normalized bbox regions (Gemini vision)."""
 
-from humeo_mcp.primitives.layouts import plan_layout
-from humeo_mcp.schemas import BoundingBox, FocusStackOrder, LayoutInstruction, LayoutKind
+from humeo_core.primitives.layouts import plan_layout
+from humeo_core.schemas import BoundingBox, FocusStackOrder, LayoutInstruction, LayoutKind
 
 
 def test_split_with_bbox_regions_not_fixed_thirds():

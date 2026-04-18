@@ -1,5 +1,5 @@
-from humeo_mcp.primitives.select_clips import select_clips_heuristic
-from humeo_mcp.schemas import TranscriptWord
+from humeo_core.primitives.select_clips import select_clips_heuristic
+from humeo_core.schemas import TranscriptWord
 
 
 def _words(start: float, end: float, n: int) -> list[TranscriptWord]:

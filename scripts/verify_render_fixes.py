@@ -26,7 +26,7 @@ from pathlib import Path
 from humeo.cutter import generate_ass
 from humeo.reframe_ffmpeg import reframe_clip_ffmpeg
 from humeo.render_window import clip_for_render
-from humeo_mcp.schemas import Clip, LayoutInstruction
+from humeo_core.schemas import Clip, LayoutInstruction
 
 
 def _snap_preview(video: Path, png: Path, at_sec: float = 1.0) -> None:

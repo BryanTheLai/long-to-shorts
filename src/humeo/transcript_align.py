@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from humeo_mcp.schemas import Clip, ClipSubtitleWords, TranscriptWord
+from humeo_core.schemas import Clip, ClipSubtitleWords, TranscriptWord
 
 # Whisper / WhisperX / OpenAI-normalized segment shapes
 _MAX_WORDS_PER_CUE = 8

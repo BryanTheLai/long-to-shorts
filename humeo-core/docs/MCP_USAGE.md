@@ -1,4 +1,8 @@
-# Using humeo-mcp from an MCP client
+# Using humeo-core from an MCP client
+
+The installed console command is **`humeo-core`**. For backward compatibility,
+**`humeo-mcp`** is also registered (same entrypoint); either works in
+`"command": ...` if both are on `PATH` from the same install.
 
 ## 1. Add to your client
 
@@ -8,7 +12,7 @@
 {
   "mcpServers": {
     "humeo": {
-      "command": "humeo-mcp"
+      "command": "humeo-core"
     }
   }
 }
@@ -45,7 +49,7 @@
 ## 3. Strict JSON all the way
 
 Every request/response is validated against the schemas in
-[`schemas.py`](../src/humeo_mcp/schemas.py). Invalid input is rejected
+[`schemas.py`](../src/humeo_core/schemas.py). Invalid input is rejected
 *before* ffmpeg is touched, so a confused agent can't accidentally
 rm-rf your disk or burn GPU hours.
 

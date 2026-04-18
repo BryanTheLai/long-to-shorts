@@ -17,8 +17,8 @@ working. Old cache files keep working (with a one-line meta version bump).
 Translated:
 
 - Keep the 4-stage pipeline (`ingest → clip select → layout vision → render`).
-- Keep the 3 ffmpeg layouts.
-- Keep the two-package split (`humeo` product, `humeo-mcp` engine).
+- Keep the five fixed 9:16 layouts in `humeo_core.primitives.layouts`.
+- Keep the two-package split (`humeo` product, `humeo-core` engine).
 - **Add one new cheap multimodal artefact** between ingest and clip selection:
   `narrative_context.json`. This is HIVE §3.1.5 "Comprehensive Caption" in one
   file, one prompt, no memory module.
@@ -39,22 +39,22 @@ moves or a supporting test.
 There are two Python packages in this repo and they are **both useful on
 their own**:
 
-- `humeo-mcp/` — a reusable MCP server. Anyone (Cursor, Claude Desktop, a
-  different CLI) can `pip install humeo-mcp` and consume the primitives. It
+- `humeo-core/` — a reusable MCP server. Anyone (Cursor, Claude Desktop, a
+  different CLI) can `pip install humeo-core` and consume the primitives. It
   has its own `pyproject.toml`, its own `README.md`, its own `LICENSE`, its
   own tests. It is intended to be publishable to PyPI independently. See
-  `humeo-mcp/README.md` lines 1-10 and `docs/SOLUTIONS.md §5.3-5.4`
+  `humeo-core/README.md` lines 1-10 and `docs/SOLUTIONS.md §5.3-5.4`
   (explicitly rejected merging the two).
 - `src/humeo/` — the product wrapper that glues download + transcript + LLM
   selection + subtitles + ffmpeg together into the `humeo` CLI. It depends
-  on `humeo-mcp` via an editable path source (see root `pyproject.toml`
+  on `humeo-core` via an editable path source (see root `pyproject.toml`
   `[tool.uv.sources]`).
 
 This is **not a nested git repo**. It's a monorepo with two installable
 packages, which is a common and correct Python layout (same pattern as
 `langchain` + `langchain-core`, `pytest` + `pytest-*`, etc.).
 
-Each package has its own `.gitignore` because when `humeo-mcp/` is
+Each package has its own `.gitignore` because when `humeo-core/` is
 extracted/vendored into its own checkout (or published to PyPI from a
 subtree), it must still ignore the right things on its own. The root
 `.gitignore` is the authoritative repo-wide ignore.
@@ -65,18 +65,18 @@ So: **two `.gitignore`s is not a bug**. The duplication is small noise.
 
 | # | Solution | Pros | Cons |
 |---|----------|------|------|
-| **1 (chosen)** | Keep both. Trim `humeo-mcp/.gitignore` to the minimum a standalone consumer of that package needs (`__pycache__`, `*.pyc`, `.pytest_cache/`, `build/`, `dist/`, `*.egg-info/`, `.venv/`). Document the invariant in both files. | Zero behavioural change. Sub-package stays standalone-usable. | Two small files to maintain. |
-| 2 | Delete `humeo-mcp/.gitignore`. | One file. | If anyone extracts `humeo-mcp/` into its own repo (per SOLUTIONS.md §5.4), they have no ignores. Slight land-mine for future contributors. |
-| 3 | Convert `humeo-mcp/` to a git submodule. | "Pure" isolation. | Massive dev-UX regression. Breaks editable installs. Overkill. |
-| 4 | Merge `humeo-mcp/` back into `src/humeo/`. | Simplest tree. | Kills the reusable MCP server, which is the whole point of the package. Explicitly rejected in `docs/SOLUTIONS.md §5.3`. |
+| **1 (chosen)** | Keep both. Trim `humeo-core/.gitignore` to the minimum a standalone consumer of that package needs (`__pycache__`, `*.pyc`, `.pytest_cache/`, `build/`, `dist/`, `*.egg-info/`, `.venv/`). Document the invariant in both files. | Zero behavioural change. Sub-package stays standalone-usable. | Two small files to maintain. |
+| 2 | Delete `humeo-core/.gitignore`. | One file. | If anyone extracts `humeo-core/` into its own repo (per SOLUTIONS.md §5.4), they have no ignores. Slight land-mine for future contributors. |
+| 3 | Convert `humeo-core/` to a git submodule. | "Pure" isolation. | Massive dev-UX regression. Breaks editable installs. Overkill. |
+| 4 | Merge `humeo-core/` back into `src/humeo/`. | Simplest tree. | Kills the reusable MCP server, which is the whole point of the package. Explicitly rejected in `docs/SOLUTIONS.md §5.3`. |
 
 ### 1.3 Action
 
-- Leave `humeo-mcp/.gitignore` (already minimal at 9 lines — good).
+- Leave `humeo-core/.gitignore` (already minimal at 9 lines — good).
 - Add a 1-line comment at the top of each `.gitignore` pointing at the other,
   so future contributors know which rules go where:
-  - Root: `# Repo-wide ignores. Sub-package has its own humeo-mcp/.gitignore.`
-  - humeo-mcp: `# Standalone-package ignores. Repo-wide rules live in ../.gitignore.`
+  - Root: `# Repo-wide ignores. Sub-package has its own humeo-core/.gitignore.`
+  - humeo-core: `# Standalone-package ignores. Repo-wide rules live in ../.gitignore.`
 - Keep as-is otherwise. No code changes.
 
 ---
@@ -211,11 +211,11 @@ All new fields are optional. Old `clips.json` files still validate.
 
 Files that change:
 
-1. **`humeo-mcp/src/humeo_mcp/schemas.py`** — append optional fields:
+1. **`humeo-core/src/humeo_core/schemas.py`** — append optional fields:
    - `Clip`: `source_scene_ids: list[str] = []`, `rule_scores: list[RuleScore] = []`, `selection_reason: str = ""`.
    - New `RuleScore(BaseModel)`: `rule_id: str; score: float (0..1); reason: str`.
    - New `NarrativeCharacter`, `NarrativeScene`, `NarrativeContext` models mirroring §2.4.
-   - Export the new names from `humeo_mcp.__init__`.
+   - Export the new names from `humeo_core.__init__`.
    - **No field removals, no rename, no stricter validator on existing fields** → every existing test keeps passing.
 
 2. **`src/humeo/narrative_context.py`** (new file). Mirror the style of
@@ -317,10 +317,10 @@ returned, and `split_chart_region`/`split_person_region` end up `null` in
 the instruction. Nothing is logged. We never find out the model
 misbehaved.
 
-Then `humeo_mcp.primitives.layouts.plan_split_chart_person` sees null
+Then `humeo_core.primitives.layouts.plan_split_chart_person` sees null
 regions and falls through to its **hard-coded** 2/3 | 1/3 strip math:
 
-```227:244:humeo-mcp/src/humeo_mcp/primitives/layouts.py
+```227:244:humeo-core/src/humeo_core/primitives/layouts.py
     left_split = int(round((2.0 / 3.0) * float(src_w)))
     left_split -= left_split % 2
     left_split = max(2, min(src_w - 2, left_split))
@@ -347,7 +347,7 @@ barely overlaps her. What *does* make it into the bottom band is a narrow
 640×1080 source region scaled to fit inside a 1080×768 target with
 `force_original_aspect_ratio=decrease + pad=black` — see:
 
-```262:266:humeo-mcp/src/humeo_mcp/primitives/layouts.py
+```262:266:humeo-core/src/humeo_core/primitives/layouts.py
     band_person_bot = (
         f"[src2]crop={person_w}:{person_h}:{person_x}:0,"
         f"scale={out_w}:{bot_h}:force_original_aspect_ratio=decrease,"
@@ -412,7 +412,7 @@ exactly (so legacy callers are unaffected).
 ### 3.3 JSON contract changes (additive)
 
 ```python
-# humeo_mcp/schemas.py  — LayoutInstruction gets ONE new optional field.
+# humeo_core/schemas.py  — LayoutInstruction gets ONE new optional field.
 class LayoutInstruction(BaseModel):
     # existing fields unchanged …
     split_fit: Literal["fit", "fill"] = "fill"   # NEW — default flips behaviour; safe because
@@ -425,12 +425,12 @@ Cache is invalidated by bumping `layout_vision.meta.json.vision_schema_version` 
 
 ### 3.4 Implementation plan (small, surgical, all tested)
 
-1. **`humeo-mcp/src/humeo_mcp/schemas.py`**:
+1. **`humeo-core/src/humeo_core/schemas.py`**:
    - Add `split_fit: Literal["fit", "fill"] = "fill"` to `LayoutInstruction`.
    - Add `GeminiLayoutVisionResponse` (a Pydantic model used as the
      `response_schema` argument) mirroring the JSON the vision prompt asks
      for, with the `BoundingBox` constraints.
-2. **`humeo-mcp/src/humeo_mcp/primitives/layouts.py`**:
+2. **`humeo-core/src/humeo_core/primitives/layouts.py`**:
    - In `plan_split_chart_person`, branch on `instruction.split_fit`:
      - `"fit"` → current filtergraph.
      - `"fill"` → swap each `scale=...:force_original_aspect_ratio=decrease,pad=...color=black` with `scale=...:force_original_aspect_ratio=increase,crop={out_w}:{band_h}:(iw-ow)/2:(ih-oh)/2`.
@@ -448,11 +448,11 @@ Cache is invalidated by bumping `layout_vision.meta.json.vision_schema_version` 
      `split_chart_person` and derive `left_split = person_bbox.x1` so the
      F2 fallback does the right thing.
 4. **Tests**:
-   - `humeo-mcp/tests/test_layouts.py`:
+   - `humeo-core/tests/test_layouts.py`:
      - `test_split_fill_uses_increase_and_crop` — the new filtergraph
        contains `force_original_aspect_ratio=increase` **and** `crop=1080:`.
      - `test_split_fit_still_letterboxes` — legacy mode unchanged.
-   - `humeo-mcp/tests/test_layout_bbox.py`:
+   - `humeo-core/tests/test_layout_bbox.py`:
      - `test_split_with_bbox_regions_uses_fill_by_default` — vision-derived
        instructions now render without black bars.
    - `tests/test_layout_vision_unit.py`:
@@ -502,8 +502,8 @@ order.
 - [ ] `schemas.py`: add `RuleScore`, `NarrativeCharacter`, `NarrativeScene`,
       `NarrativeContext`, `GeminiLayoutVisionResponse`; extend `Clip` and
       `LayoutInstruction` with optional fields.
-- [ ] Export new symbols from `humeo_mcp.__init__`.
-- [ ] `humeo-mcp/tests/test_schemas.py`: validate every new model +
+- [ ] Export new symbols from `humeo_core.__init__`.
+- [ ] `humeo-core/tests/test_schemas.py`: validate every new model +
       back-compat round-trip on the old `Clip` JSON.
 
 ### Phase 2 — rendering fixes (Section 3)
@@ -562,7 +562,7 @@ Explicit. So we don't silently scope-creep into HIVE.
   `split_chart_person`, `split_two_persons`, `split_two_charts`) — the
   "max 2 items" rule makes the extra two layouts near-free to add.
 - **No change to the ingest provider selection** (WhisperX vs OpenAI).
-- **No change to `humeo-mcp`'s MCP server tools.** All modifications are
+- **No change to `humeo-core`'s MCP server tools.** All modifications are
   schema-additive and behaviour is opt-in via new fields.
 
 ---

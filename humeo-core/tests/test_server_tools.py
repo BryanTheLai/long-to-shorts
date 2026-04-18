@@ -6,8 +6,8 @@ We import the module and invoke those functions directly to verify the
 end-to-end wiring (schemas validated, dispatch correct, JSON-serializable).
 """
 
-import humeo_mcp.server as srv
-from humeo_mcp.schemas import LayoutKind
+import humeo_core.server as srv
+from humeo_core.schemas import LayoutKind
 
 
 def test_list_layouts_lists_all_three():

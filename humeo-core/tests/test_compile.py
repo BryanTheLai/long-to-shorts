@@ -1,5 +1,5 @@
-from humeo_mcp.primitives.compile import build_ffmpeg_cmd
-from humeo_mcp.schemas import Clip, LayoutInstruction, LayoutKind, RenderRequest
+from humeo_core.primitives.compile import build_ffmpeg_cmd
+from humeo_core.schemas import Clip, LayoutInstruction, LayoutKind, RenderRequest
 
 
 def _req(**overrides):

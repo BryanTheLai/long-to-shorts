@@ -7,7 +7,7 @@ These verify the *instruction-building* logic (pure, deterministic) using
 import pytest
 
 from humeo.reframe_ffmpeg import layout_for_clip, reframe_clip_ffmpeg
-from humeo_mcp.schemas import Clip, LayoutKind
+from humeo_core.schemas import Clip, LayoutKind
 
 
 def _clip() -> Clip:

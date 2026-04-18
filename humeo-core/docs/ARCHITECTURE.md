@@ -8,13 +8,13 @@ That analogy maps exactly onto this MCP:
 
 | Rocket part     | Codebase                                                         | Purpose                                                                 |
 | --------------- | ---------------------------------------------------------------- | ----------------------------------------------------------------------- |
-| Container       | `src/humeo_mcp/schemas.py`                                       | Strict JSON contracts every stage reads/writes.                         |
-| Landing gear    | `src/humeo_mcp/primitives/ingest.py`                             | Deterministic local extraction (scenes, keyframes, transcript).         |
-| Thrusters (×5)  | `src/humeo_mcp/primitives/layouts.py`                            | Five fixed 9:16 crop/compose recipes (max 2 on-screen items).           |
+| Container       | `src/humeo_core/schemas.py`                                       | Strict JSON contracts every stage reads/writes.                         |
+| Landing gear    | `src/humeo_core/primitives/ingest.py`                             | Deterministic local extraction (scenes, keyframes, transcript).         |
+| Thrusters (×5)  | `src/humeo_core/primitives/layouts.py`                            | Five fixed 9:16 crop/compose recipes (max 2 on-screen items).           |
 | Pilot           | `primitives/classify.py` + `primitives/select_clips.py`          | Heuristic + LLM-ready decision makers.                                  |
-| Compiler        | `src/humeo_mcp/primitives/compile.py`                            | Deterministic ffmpeg assembly.                                          |
-| Control panel   | `src/humeo_mcp/server.py`                                        | MCP tools exposing every primitive.                                     |
-| Control surface | `src/humeo_mcp/server.py`                                        | MCP tool surface for agents and clients.                                |
+| Compiler        | `src/humeo_core/primitives/compile.py`                            | Deterministic ffmpeg assembly.                                          |
+| Control panel   | `src/humeo_core/server.py`                                        | MCP tools exposing every primitive.                                     |
+| Control surface | `src/humeo_core/server.py`                                        | MCP tool surface for agents and clients.                                |
 
 ## First-principles reasoning
 

@@ -7,7 +7,7 @@ from humeo.transcript_align import (
     clip_words_to_srt_lines,
     format_srt,
 )
-from humeo_mcp.schemas import Clip, TranscriptWord
+from humeo_core.schemas import Clip, TranscriptWord
 
 
 def test_clip_subtitle_words_shifts_to_clip_local():

@@ -1,4 +1,4 @@
-# humeo-mcp
+# humeo-core
 
 **Reusable-rocket MCP server for long-video → 9:16 shorts.**
 
@@ -52,7 +52,7 @@ items** — where an "item" is a `person` (a human speaker) or a `chart`
 
 Because the geometry is bounded, we do NOT need a general subject-tracker
 ML model or a drag-to-highlight UI. We need five small, correct pieces of
-crop/compose math. That is exactly what `src/humeo_mcp/primitives/layouts.py`
+crop/compose math. That is exactly what `src/humeo_core/primitives/layouts.py`
 is.
 
 See [`TERMINOLOGY.md`](../TERMINOLOGY.md) for the full glossary of terms
@@ -73,7 +73,8 @@ External requirements: `ffmpeg` and `ffprobe` on PATH.
 ## Use it as an MCP server
 
 ```bash
-humeo-mcp         # stdio transport
+humeo-core         # stdio transport (primary console script)
+# humeo-mcp        # same entrypoint — kept so existing MCP configs keep working
 ```
 
 Example Cursor/Claude Desktop config:
@@ -81,7 +82,7 @@ Example Cursor/Claude Desktop config:
 ```json
 {
   "mcpServers": {
-    "humeo": { "command": "humeo-mcp" }
+    "humeo": { "command": "humeo-core" }
   }
 }
 ```
@@ -115,7 +116,7 @@ vision.py     (multimodal LLM + OCR bboxes)
 ## JSON contracts (non-negotiable)
 
 All tools take and return Pydantic-validated JSON. The contracts live in
-[`src/humeo_mcp/schemas.py`](src/humeo_mcp/schemas.py):
+[`src/humeo_core/schemas.py`](src/humeo_core/schemas.py):
 
 - `Scene`                     `{scene_id, start_time, end_time, keyframe_path?}`
 - `TranscriptWord`            `{word, start_time, end_time}`

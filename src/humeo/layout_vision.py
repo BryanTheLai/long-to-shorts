@@ -11,7 +11,7 @@ from typing import Any
 from google import genai
 from google.genai import types
 
-from humeo_mcp.schemas import (
+from humeo_core.schemas import (
     BoundingBox,
     LayoutInstruction,
     LayoutKind,
@@ -19,7 +19,7 @@ from humeo_mcp.schemas import (
     SceneClassification,
     SceneRegions,
 )
-from humeo_mcp.primitives.vision import layout_instruction_from_regions
+from humeo_core.primitives.vision import layout_instruction_from_regions
 
 from humeo.config import GEMINI_MODEL, GEMINI_VISION_MODEL, PipelineConfig
 from humeo.env import resolve_gemini_api_key

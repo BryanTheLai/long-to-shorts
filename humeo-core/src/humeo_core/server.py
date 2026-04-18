@@ -48,7 +48,7 @@ from .schemas import (
 
 
 mcp = FastMCP(
-    "humeo-mcp",
+    "humeo-core",
     instructions=(
         "Humeo MCP: reusable primitives for turning long videos into 9:16 shorts. "
         "Compose tools in this order: ingest -> classify_scenes -> select_clips -> "
@@ -323,7 +323,7 @@ def render_clip(request: dict[str, Any]) -> dict[str, Any]:
 
 
 def main() -> None:
-    """stdio entrypoint for ``humeo-mcp`` console-script."""
+    """stdio entrypoint for ``humeo-core`` console-script."""
 
     mcp.run()
 

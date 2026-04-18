@@ -97,7 +97,7 @@ def _mediapipe_face_bbox(keyframe_path: str) -> BoundingBox | None:
     """Return the largest-confidence face as a ``BoundingBox``, or ``None``.
 
     Imports MediaPipe + OpenCV lazily so they remain optional dependencies
-    (install ``humeo-mcp[face]``).
+    (install ``humeo-core[face]``).
     """
 
     try:
@@ -105,7 +105,7 @@ def _mediapipe_face_bbox(keyframe_path: str) -> BoundingBox | None:
         import mediapipe as mp  # type: ignore
     except ImportError as e:
         raise RuntimeError(
-            "MediaPipe face detection requires `pip install humeo-mcp[face]`"
+            "MediaPipe face detection requires `pip install humeo-core[face]`"
         ) from e
 
     img = cv2.imread(keyframe_path)

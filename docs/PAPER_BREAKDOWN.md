@@ -258,16 +258,16 @@ HIVE = **Module A (understanding) + Module B (editing)**. This repo implements t
 
 | HIVE concept                         | This repo                                                            |
 |--------------------------------------|----------------------------------------------------------------------|
-| Scene segmentation                   | `humeo_mcp.primitives.ingest` (PySceneDetect + keyframe export)      |
-| Character extraction (faces)         | `humeo_mcp.primitives.face_detect` (MediaPipe, pluggable)            |
+| Scene segmentation                   | `humeo_core.primitives.ingest` (PySceneDetect + keyframe export)      |
+| Character extraction (faces)         | `humeo_core.primitives.face_detect` (MediaPipe, pluggable)            |
 | Dialogue / ASR                       | `humeo.ingest.transcribe_whisperx` + `TranscriptWord` schema         |
-| Comprehensive caption (per scene)    | `humeo_mcp.primitives.vision` (vision-LLM + OCR bbox primitive)      |
-| Highlight detection                  | `humeo_mcp.primitives.select_clips` (density heuristic; LLM pluggable in `humeo.clip_selector`) |
+| Comprehensive caption (per scene)    | `humeo_core.primitives.vision` (vision-LLM + OCR bbox primitive)      |
+| Highlight detection                  | `humeo_core.primitives.select_clips` (density heuristic; LLM pluggable in `humeo.clip_selector`) |
 | Opening/ending selection             | Covered inside `clip_selector` (the LLM picks clip boundaries)       |
 | Content pruning                      | Future work — see `SOLUTIONS.md §6` for design                       |
 | Memory module                        | Future work — artefacts on disk already support this                 |
-| Strict JSON at every hop             | `humeo_mcp.schemas` (Pydantic, validated, single source of truth)    |
-| Decomposed editing via tools         | `humeo_mcp.server` (each primitive is its own MCP tool)              |
+| Strict JSON at every hop             | `humeo_core.schemas` (Pydantic, validated, single source of truth)    |
+| Decomposed editing via tools         | `humeo_core.server` (each primitive is its own MCP tool)              |
 
 The big architectural lesson we copied: **every intermediate artefact is strict JSON, every primitive is one file, every boundary is schema-validated.** That's HIVE §7 ("what to learn from the paper") applied directly.
 

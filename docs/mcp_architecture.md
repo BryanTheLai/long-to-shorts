@@ -2,12 +2,12 @@
 
 Canonical docs:
 
-- `humeo-mcp/docs/ARCHITECTURE.md`
-- `humeo-mcp/docs/MCP_USAGE.md`
+- `humeo-core/docs/ARCHITECTURE.md`
+- `humeo-core/docs/MCP_USAGE.md`
 
 Short version:
 
-- `humeo-mcp` is the engine
+- `humeo-core` is the engine
 - it owns schemas, primitives, and the MCP server
 - the root app `src/humeo` calls into it
 

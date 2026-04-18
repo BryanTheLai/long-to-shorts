@@ -30,7 +30,7 @@ The MediaPipe-only backend would do badly on this video:
 - **Chart scenes have no face**, so MediaPipe falls through to blurred pad — the chart content itself is not emphasized.
 - **The speaker shares screen**, so the face bbox is pushed far right. The heuristic handles this, but it can't read the chart title or the axis labels — it just knows "face on right → assume chart left."
 
-The vision-LLM + OCR primitive (`humeo_mcp.primitives.vision`) solves this directly:
+The vision-LLM + OCR primitive (`humeo_core.primitives.vision`) solves this directly:
 
 - Reads the chart title ("PPI vs CPI divergence").
 - Returns both `person_bbox` and `chart_bbox` with accurate geometry.
@@ -45,7 +45,7 @@ humeo --long-to-shorts "https://www.youtube.com/watch?v=PdVv_vLkUgk"
 ```
 
 Today the product wrapper uses the stable heuristic scene-classification path.
-The richer LLM+OCR bbox path lives in `humeo-mcp` and remains the right next
+The richer LLM+OCR bbox path lives in `humeo-core` and remains the right next
 upgrade for this exact video.
 
 ## What we expect in the final shorts

@@ -1,7 +1,7 @@
 """The 9:16 layout thrusters — deterministic crop + compose math.
 
 First principles: this video format has a hard constraint of **at most two
-on-screen items** per short (see :class:`humeo_mcp.schemas.LayoutKind`). That
+on-screen items** per short (see :class:`humeo_core.schemas.LayoutKind`). That
 gives exactly five recipes:
 
 * 1 person alone, tight  → ``ZOOM_CALL_CENTER``

@@ -13,14 +13,14 @@ import json
 
 import pytest
 
-from humeo_mcp.primitives.vision import (
+from humeo_core.primitives.vision import (
     _CHART_WIDTH_SPLIT_THRESHOLD,
     classify_from_regions,
     classify_scenes_with_vision_llm,
     detect_regions_with_llm,
     layout_instruction_from_regions,
 )
-from humeo_mcp.schemas import (
+from humeo_core.schemas import (
     BoundingBox,
     LayoutKind,
     Scene,

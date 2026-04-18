@@ -4,8 +4,8 @@ import json
 import logging
 from pathlib import Path
 
-from humeo_mcp.primitives.ingest import extract_keyframes
-from humeo_mcp.schemas import LayoutInstruction, LayoutKind, Scene
+from humeo_core.primitives.ingest import extract_keyframes
+from humeo_core.schemas import LayoutInstruction, LayoutKind, Scene
 
 from humeo.clip_selection_cache import cache_valid, load_meta, transcript_fingerprint, write_artifacts
 from humeo.clip_selector import load_clips, save_clips, select_clips

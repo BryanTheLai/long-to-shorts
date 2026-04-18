@@ -5,8 +5,8 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
-from humeo_mcp.primitives import compile as compile_mod
-from humeo_mcp.schemas import (
+from humeo_core.primitives import compile as compile_mod
+from humeo_core.schemas import (
     Clip,
     LayoutInstruction,
     LayoutKind,

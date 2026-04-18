@@ -3,7 +3,7 @@
 import logging
 from pathlib import Path
 
-from humeo_mcp.schemas import Clip
+from humeo_core.schemas import Clip
 
 from humeo.transcript_align import (
     clip_subtitle_words,

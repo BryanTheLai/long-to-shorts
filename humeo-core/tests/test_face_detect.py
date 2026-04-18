@@ -5,8 +5,8 @@ tests — the primitive contract is what we care about: *given* a face
 bbox, does the primitive produce the right ``SceneRegions``.
 """
 
-from humeo_mcp.primitives.face_detect import detect_face_regions
-from humeo_mcp.schemas import BoundingBox, Scene
+from humeo_core.primitives.face_detect import detect_face_regions
+from humeo_core.schemas import BoundingBox, Scene
 
 
 def _scene(i: int, kf: str | None = "/tmp/k.jpg") -> Scene:

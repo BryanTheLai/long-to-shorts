@@ -1,4 +1,4 @@
-"""humeo-mcp: reusable-rocket MCP primitives for long-video-to-shorts editing.
+"""humeo-core: reusable-rocket MCP primitives for long-video-to-shorts editing.
 
 First-principles design (rocket analogy):
     Container  -> schemas.py        (strict JSON contracts)

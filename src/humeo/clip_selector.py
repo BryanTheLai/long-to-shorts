@@ -16,7 +16,7 @@ from typing import Callable, TypeVar
 from google import genai
 from google.genai import types
 
-from humeo_mcp.schemas import Clip, ClipPlan
+from humeo_core.schemas import Clip, ClipPlan
 
 from humeo.config import (
     GEMINI_MODEL,
