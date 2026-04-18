@@ -10,6 +10,7 @@ from humeo_core.schemas import LayoutInstruction, LayoutKind, Scene
 from humeo.clip_selection_cache import cache_valid, load_meta, transcript_fingerprint, write_artifacts
 from humeo.clip_selector import load_clips, save_clips, select_clips
 from humeo.config import PipelineConfig
+from humeo.content_pruning import run_content_pruning_stage
 from humeo.cutter import generate_ass
 from humeo.ingest import download_video, extract_audio, transcribe_whisperx
 from humeo.layout_vision import run_layout_vision_stage
@@ -131,6 +132,22 @@ def run_pipeline(config: PipelineConfig) -> list[Path]:
             clip.virality_score,
             clip.topic,
         )
+
+    # ------------------------------------------------------------------
+    # Stage 2.5: Content Pruning (HIVE-style inner-clip tightening)
+    # ------------------------------------------------------------------
+    # Tightens each candidate window by writing trim_start_sec / trim_end_sec
+    # on the Clip models. keyframe extraction and layout vision below both
+    # consume ``clip_for_render(clip)`` so they automatically operate on the
+    # pruned window without further changes.
+    logger.info("--- STAGE 2.5: CONTENT PRUNING (level=%s) ---", config.prune_level)
+    clips = run_content_pruning_stage(
+        config.work_dir,
+        clips,
+        transcript,
+        transcript_fp=fp,
+        config=config,
+    )
 
     # ------------------------------------------------------------------
     # Stage 3: Clip layouts

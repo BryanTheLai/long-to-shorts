@@ -54,6 +54,13 @@ class PipelineConfig:
     # When True, render stage overwrites existing output files.
     overwrite_outputs: bool = False
 
+    # Stage 2.5 - inner-clip content pruning (HIVE "irrelevant content pruning"
+    # applied at clip scale). One of: off | conservative | balanced | aggressive.
+    # See ``src/humeo/content_pruning.py`` for the caps and the prompt.
+    prune_level: str = "balanced"
+    # When True, re-run the pruning LLM even when prune.meta.json matches.
+    force_content_pruning: bool = False
+
     # Subtitle rendering / cue shaping.
     # Values are in **output pixels** for a 1080x1920 short: libass is pinned to
     # the output resolution via ``original_size``, so ``FontSize`` and ``MarginV``

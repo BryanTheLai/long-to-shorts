@@ -98,6 +98,24 @@ Examples:
     )
 
     parser.add_argument(
+        "--prune-level",
+        choices=["off", "conservative", "balanced", "aggressive"],
+        default="balanced",
+        help=(
+            "Stage 2.5 inner-clip content pruning aggressiveness. "
+            "'off' skips pruning entirely; 'conservative' trims <=10%%, "
+            "'balanced' <=20%%, 'aggressive' <=35%% of each clip "
+            "(always clamped to the MIN_CLIP_DURATION_SEC floor). Default: balanced."
+        ),
+    )
+
+    parser.add_argument(
+        "--force-content-pruning",
+        action="store_true",
+        help="Re-run content-pruning LLM even when prune.meta.json matches.",
+    )
+
+    parser.add_argument(
         "--clean-run",
         action="store_true",
         help=(
@@ -156,6 +174,7 @@ def main():
     use_video_cache = not args.no_video_cache
     force_clip_selection = args.force_clip_selection
     force_layout_vision = args.force_layout_vision
+    force_content_pruning = args.force_content_pruning
     overwrite_outputs = False
     work_dir = args.work_dir
 
@@ -163,6 +182,7 @@ def main():
         use_video_cache = False
         force_clip_selection = True
         force_layout_vision = True
+        force_content_pruning = True
         overwrite_outputs = True
         if work_dir is None:
             stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -180,6 +200,8 @@ def main():
         force_layout_vision=force_layout_vision,
         clean_run=args.clean_run,
         overwrite_outputs=overwrite_outputs,
+        prune_level=args.prune_level,
+        force_content_pruning=force_content_pruning,
         subtitle_font_size=args.subtitle_font_size,
         subtitle_margin_v=args.subtitle_margin_v,
         subtitle_max_words_per_cue=args.subtitle_max_words,

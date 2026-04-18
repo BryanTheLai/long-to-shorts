@@ -10,6 +10,42 @@ working. Old cache files keep working (with a one-line meta version bump).
 
 ---
 
+## Status snapshot (maintainer log, 2026-04-18)
+
+This section is only “what shipped vs what this file still proposes.” It does
+not replace the detailed sections below.
+
+### Already implemented (today’s codebase)
+
+- **Four-stage product pipeline** (`ingest → clip selection → layout vision → render`) as in `src/humeo/pipeline.py` and `docs/PIPELINE.md`.
+- **Frames + audio + timing (proof):**
+  - **Video + audio:** `source.mp4` + `ffmpeg` audio extract in `humeo.ingest` (`extract_audio`).
+  - **Timing:** `transcript.json` with segment/word times; clip windows are `start_time_sec` / `end_time_sec` on `Clip`; `clip_for_render` applies trims; `humeo_core.primitives.compile` cuts with `ffmpeg` `-ss` / `-t`.
+  - **Frames (sparse):** one exported keyframe per **selected clip window** via `humeo_core.primitives.ingest.extract_keyframes` (not dense frame understanding of the whole hour).
+- **Multimodal, but split across stages (proof):**
+  - **Speech side:** clip selector prompt is built only from timed transcript lines (`humeo.clip_selector.build_prompt` → segment `[start-end] text`). No pixels at clip-select time.
+  - **Visual side:** after clips exist, **one keyframe per clip** goes to Gemini vision; JSON forces layout + normalized bboxes (`src/humeo/layout_vision.py`, `GEMINI_LAYOUT_VISION_PROMPT`).
+- **Decomposed editing (proof):** separate LLM calls and caches for (1) clip JSON vs (2) per-clip layout JSON; deterministic ffmpeg compile is its own primitive — not one prompt that outputs final video.
+- **Strict JSON contracts:** `humeo_core.schemas` + `response_mime_type="application/json"` on Gemini calls.
+- **Monorepo layout:** `humeo-core/` engine + `src/humeo/` product (package rename to `humeo_core` completed; see `docs/SOLUTIONS.md` chronology).
+
+### Not implemented yet (this TODO’s “north star” extras)
+
+- **`narrative_context.json`** before clip selection (§0 bullet) — **not built.** Clip selection still depends only on transcript (+ hashes for cache), not a visual narrative artefact.
+- **Clip selector consuming that artefact** — **not built** (same reason).
+- **“Kill letterboxing” as an explicit milestone closure** — treat as **open** until tracked as a closed issue with before/after samples; layout math exists but this doc’s acceptance criterion was never formally signed off here.
+- **§1.3 cross-comments on the two `.gitignore` files** — still **optional**; root and `humeo-core/.gitignore` do not yet have the one-line pointers suggested below.
+
+### Operational note: Gemini `503 UNAVAILABLE` (seen 2026-04-18)
+
+If clip selection fails after three attempts with
+`503 UNAVAILABLE` / “high demand” for `gemini-3.1-flash-lite-preview`, that is
+**Google’s tier capacity**, not a bug in this repo. Mitigations: wait and
+retry, set **`GEMINI_MODEL`** / pass **`--gemini-model`** to a different
+generally available model, or use a project/tier with higher quota.
+
+---
+
 ## 0. North star for this milestone
 
 > "Not full HIVE. *Feel* closer to HIVE. Ship fast."

@@ -33,3 +33,20 @@ def clip_selection_prompts(
     system = env.get_template("clip_selection_system.jinja2").render(**ctx)
     user = env.get_template("clip_selection_user.jinja2").render(**ctx)
     return system, user
+
+
+def content_pruning_system_prompt(
+    *,
+    min_dur: float,
+    max_dur: float,
+    level: str,
+) -> str:
+    """Return the system prompt for Stage 2.5 content pruning.
+
+    The user message is built in ``humeo.content_pruning`` from the list of
+    candidate clips (clip-relative segment lines) since it is not static text.
+    """
+    env = jinja2.Environment(loader=_prompt_loader(), autoescape=False, trim_blocks=True)
+    return env.get_template("content_pruning_system.jinja2").render(
+        min_dur=min_dur, max_dur=max_dur, level=level
+    )

@@ -8,6 +8,7 @@ This document describes **`humeo.pipeline.run_pipeline`**: what runs when, what 
 YouTube URL
     → Stage 1: Ingest (download, transcript)
     → Stage 2: Clip selection (Gemini JSON → clips.json)
+    → Stage 2.5: Content pruning (Gemini JSON → prune.json, writes clip.trim_start/end)
     → Stage 3: Keyframes + layout vision (Gemini vision JSON → LayoutInstruction per clip)
     → Stage 4: Render (ffmpeg per clip → output/short_<id>.mp4)
 ```
@@ -82,6 +83,88 @@ Top-level object with `"clips": [ ... ]` (or a bare array — parser accepts bot
 - `MAX_CLIP_DURATION_SEC` = **90**
 - `TARGET_CLIP_COUNT` = **5**
 - Default `GEMINI_MODEL` = **`gemini-3.1-flash-lite-preview`** (if env unset)
+
+---
+
+## Stage 2.5: Content pruning (Gemini, text-only)
+
+**Goal:** Tighten each selected clip by trimming weak lead-in / trailing
+content. This is HIVE's "irrelevant content pruning" sub-task applied at the
+**inner-clip** scale (not scene scale) — the cleanest win for watchability on
+50-90s talk-heavy shorts.
+
+**How it's wired in** — `humeo.content_pruning.run_content_pruning_stage`:
+
+- Runs **after** clip selection (`clips.json` is finalized) and **before**
+  keyframe extraction, because keyframes are sampled from
+  `clip_for_render(clip)` which already honours `trim_start_sec` /
+  `trim_end_sec`.
+- Writes per-clip trims into the existing `Clip.trim_start_sec` /
+  `Clip.trim_end_sec` fields. **No schema changes.** The existing
+  `humeo.render_window` + `humeo_core.primitives.compile` path cuts with
+  `-ss` / `-t` from those fields, so the tightened window renders for free.
+
+**Aggressiveness** — `config.prune_level` ∈ {`off`, `conservative`, `balanced`, `aggressive`}:
+
+| Level | Max total trim per clip | Intent |
+|-------|------------------------|--------|
+| `off` | 0% | Skip Stage 2.5 entirely |
+| `conservative` | ≤10% | Dead-air, throat-clears, stutters, false starts |
+| `balanced` (default) | ≤20% | +slow setup, self-correction, minor tangents |
+| `aggressive` | ≤35% | +anything not advancing the hook or payoff |
+
+**Hard guarantees** (clamped in Python after the LLM returns):
+
+- Final duration ≥ `MIN_CLIP_DURATION_SEC` (50s).
+- If `hook_start_sec` / `hook_end_sec` are set on the clip, the hook stays
+  fully inside the tightened window (with a 0.25s safety margin on each side).
+- Total trim ≤ per-level cap above.
+- Any LLM / transport failure is logged and degrades to no-op (0.0 / 0.0
+  trims), so the pipeline never dies in Stage 2.5.
+
+**When the LLM is skipped (cache hit)**
+
+- `prune.meta.json` + `prune.json` exist **and**
+- `transcript_sha256` matches **and**
+- `clips_sha256` matches (hash of clip windows, trim-independent) **and**
+- `gemini_model` matches **and**
+- `prune_level` matches **and**
+- `force_content_pruning` is false
+
+**Artifacts**
+
+| File | Contents |
+|------|----------|
+| `prune.meta.json` | `version` (1), `transcript_sha256`, `clips_sha256`, `gemini_model`, `prune_level` |
+| `prune_raw.json` | Raw string returned by Gemini (audit) |
+| `prune.json` | `{"clips": [{clip_id, trim_start_sec, trim_end_sec}, ...]}` |
+
+**Gemini call** (`humeo.content_pruning.request_prune_decisions`)
+
+- Single batched call for all 5 clips.
+- System prompt: `src/humeo/prompts/content_pruning_system.jinja2`.
+- User message: per-clip block with `clip_id`, `duration_sec`, `topic`,
+  optional `hook_window_sec`, and clip-relative segment lines
+  (`[REL_START - REL_END] text`).
+- `GenerateContentConfig(system_instruction=..., temperature=0.2, response_mime_type="application/json")`.
+- Retries: same as clip selection (3 attempts, exponential backoff).
+
+**Expected JSON shape**
+
+```json
+{
+  "decisions": [
+    {
+      "clip_id": "001",
+      "trim_start_sec": 4.2,
+      "trim_end_sec": 1.8,
+      "reason": "Throat-clear and false start at the open; trailing tangent at the close."
+    }
+  ]
+}
+```
+
+Bare-array form (`[{...}, {...}]`) is also accepted.
 
 ---
 
@@ -179,14 +262,16 @@ For each clip:
 
 ## Quick reference: what invalidates which cache
 
-| Change | Clip selection cache | Layout vision cache |
-|--------|----------------------|---------------------|
-| Edit `transcript.json` (content) | Miss (hash) | Miss (hash) |
-| Change `clips.json` without meta | N/A | Miss (`clips_sha256`) |
-| Change `--gemini-model` | Miss | May still hit vision if vision model unchanged |
-| Change vision model (env/flag) | No effect | Miss |
-| `--force-clip-selection` | Always run LLM | — |
-| `--force-layout-vision` | — | Always run vision |
+| Change | Clip selection cache | Content pruning cache | Layout vision cache |
+|--------|----------------------|-----------------------|---------------------|
+| Edit `transcript.json` (content) | Miss (hash) | Miss (hash) | Miss (hash) |
+| Change `clips.json` windows | N/A | Miss (`clips_sha256`) | Miss (`clips_sha256`) |
+| Change `--gemini-model` | Miss | Miss | May still hit vision if vision model unchanged |
+| Change `--prune-level` | No effect | Miss | No effect |
+| Change vision model (env/flag) | No effect | No effect | Miss |
+| `--force-clip-selection` | Always run LLM | — | — |
+| `--force-content-pruning` | — | Always run LLM | — |
+| `--force-layout-vision` | — | — | Always run vision |
 
 ---
 
@@ -198,6 +283,8 @@ For each clip:
 | `--gemini-vision-model` | `PipelineConfig.gemini_vision_model` |
 | `--force-clip-selection` | `force_clip_selection` |
 | `--force-layout-vision` | `force_layout_vision` |
+| `--prune-level` | `prune_level` (Stage 2.5 aggressiveness) |
+| `--force-content-pruning` | `force_content_pruning` |
 | `--work-dir`, `--cache-root`, `--no-video-cache` | work dir / cache |
 
 See `humeo.cli` for the full parser.
