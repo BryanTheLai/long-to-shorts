@@ -1,0 +1,65 @@
+[Script Info]
+ScriptType: v4.00+
+PlayResX: 1080
+PlayResY: 1920
+WrapStyle: 0
+ScaledBorderAndShadow: yes
+YCbCr Matrix: None
+
+[V4+ Styles]
+Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
+Style: Default,Arial,48,&H00FFFFFF,&H000000FF,&H00000000,&H70000000,-1,0,0,0,100,100,0,0,4,0,0,2,60,60,160,0
+
+[Events]
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+Dialogue: 0,0:00:00.00,0:00:01.37,Default,,0,0,0,,And that goes against
+Dialogue: 0,0:00:01.37,0:00:03.97,Default,,0,0,0,,conventional wisdom Now
+Dialogue: 0,0:00:03.97,0:00:06.09,Default,,0,0,0,,we agree that it
+Dialogue: 0,0:00:06.09,0:00:07.09,Default,,0,0,0,,is going to go
+Dialogue: 0,0:00:07.09,0:00:09.37,Default,,0,0,0,,up mostly because
+Dialogue: 0,0:00:09.37,0:00:10.85,Default,,0,0,0,,of what I just
+Dialogue: 0,0:00:10.85,0:00:12.79,Default,,0,0,0,,mentioned about foreign direct
+Dialogue: 0,0:00:12.79,0:00:15.32,Default,,0,0,0,,investment and our
+Dialogue: 0,0:00:15.32,0:00:17.35,Default,,0,0,0,,capital friendly business friendly
+Dialogue: 0,0:00:17.35,0:00:20.38,Default,,0,0,0,,tax policies Also deregulation
+Dialogue: 0,0:00:20.38,0:00:22.50,Default,,0,0,0,,is think
+Dialogue: 0,0:00:22.59,0:00:24.22,Default,,0,0,0,,going to the return
+Dialogue: 0,0:00:24.22,0:00:25.47,Default,,0,0,0,,on investment in the
+Dialogue: 0,0:00:25.47,0:00:27.32,Default,,0,0,0,,United States relative to
+Dialogue: 0,0:00:27.32,0:00:28.29,Default,,0,0,0,,that in the rest
+Dialogue: 0,0:00:28.29,0:00:29.91,Default,,0,0,0,,of the That is
+Dialogue: 0,0:00:29.91,0:00:31.64,Default,,0,0,0,,dollar positive And we
+Dialogue: 0,0:00:31.64,0:00:32.63,Default,,0,0,0,,take this chart all
+Dialogue: 0,0:00:32.63,0:00:33.32,Default,,0,0,0,,the way back into
+Dialogue: 0,0:00:33.32,0:00:35.14,Default,,0,0,0,,the early 80s Why
+Dialogue: 0,0:00:35.48,0:00:37.14,Default,,0,0,0,,It is because we
+Dialogue: 0,0:00:37.14,0:00:38.50,Default,,0,0,0,,like to what happened
+Dialogue: 0,0:00:38.50,0:00:39.98,Default,,0,0,0,,during Reaganomics And we
+Dialogue: 0,0:00:39.98,0:00:43.14,Default,,0,0,0,,think Trumponomics resembles
+Dialogue: 0,0:00:43.14,0:00:45.72,Default,,0,0,0,,greatly Reaganomics
+Dialogue: 0,0:00:45.79,0:00:46.60,Default,,0,0,0,,And look what happened
+Dialogue: 0,0:00:46.60,0:00:47.54,Default,,0,0,0,,to the dollar back
+Dialogue: 0,0:00:47.54,0:00:48.75,Default,,0,0,0,,then Now it was
+Dialogue: 0,0:00:48.75,0:00:50.59,Default,,0,0,0,,coming from the of
+Dialogue: 0,0:00:50.59,0:00:51.92,Default,,0,0,0,,in the late 70s
+Dialogue: 0,0:00:52.03,0:00:53.41,Default,,0,0,0,,But it really went
+Dialogue: 0,0:00:53.41,0:00:55.09,Default,,0,0,0,,into overdrive to the
+Dialogue: 0,0:00:55.09,0:00:56.10,Default,,0,0,0,,point where all the
+Dialogue: 0,0:00:56.10,0:00:57.87,Default,,0,0,0,,treasury and ministers around
+Dialogue: 0,0:00:57.87,0:00:59.63,Default,,0,0,0,,the got together and
+Dialogue: 0,0:00:59.63,0:01:01.07,Default,,0,0,0,,said this is becoming
+Dialogue: 0,0:01:01.07,0:01:02.85,Default,,0,0,0,,a deflationary risk to
+Dialogue: 0,0:01:02.85,0:01:03.75,Default,,0,0,0,,the rest of the
+Dialogue: 0,0:01:04.41,0:01:05.41,Default,,0,0,0,,Because a lot of
+Dialogue: 0,0:01:05.41,0:01:08.35,Default,,0,0,0,,debt is
+Dialogue: 0,0:01:08.35,0:01:10.20,Default,,0,0,0,,denominated was and still
+Dialogue: 0,0:01:10.20,0:01:12.50,Default,,0,0,0,,is denominated in
+Dialogue: 0,0:01:12.50,0:01:15.20,Default,,0,0,0,,dollars So the debt
+Dialogue: 0,0:01:15.20,0:01:16.38,Default,,0,0,0,,service was getting more
+Dialogue: 0,0:01:16.38,0:01:18.09,Default,,0,0,0,,and expensive back then
+Dialogue: 0,0:01:18.69,0:01:20.35,Default,,0,0,0,,We think we're not
+Dialogue: 0,0:01:20.35,0:01:21.25,Default,,0,0,0,,going to see a
+Dialogue: 0,0:01:21.25,0:01:21.94,Default,,0,0,0,,like we did in
+Dialogue: 0,0:01:21.94,0:01:23.10,Default,,0,0,0,,the early 80s But
+Dialogue: 0,0:01:23.10,0:01:24.37,Default,,0,0,0,,we think the pressure
+Dialogue: 0,0:01:24.37,0:01:25.66,Default,,0,0,0,,is to the

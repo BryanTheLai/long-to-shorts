@@ -5,6 +5,7 @@ Read **`PIPELINE.md`** first for what the code actually runs. Everything else is
 | Document | Role |
 |----------|------|
 | **[PIPELINE.md](PIPELINE.md)** | Stages, caches, JSON contracts, CLI flags (product truth). |
+| **[PROJECT_ISSUES.md](PROJECT_ISSUES.md)** | Consolidated issue inventory: confirmed runtime gaps, open backlog, and doc drift. |
 | **[ENVIRONMENT.md](ENVIRONMENT.md)** | API keys, `.env`, cache dirs, model env vars. |
 | **[TERMINOLOGY.md](../TERMINOLOGY.md)** (repo root) | Temporal clip window vs spatial layout. |
 | **[KNOWN_LIMITATIONS_AND_PROMPT_CONTRACT_GAP.md](KNOWN_LIMITATIONS_AND_PROMPT_CONTRACT_GAP.md)** | Prompt vs code (ranking, hooks, unused `Clip` fields, scene detect vs keyframes). |

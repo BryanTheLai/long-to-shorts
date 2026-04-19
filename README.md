@@ -62,6 +62,74 @@ humeo --long-to-shorts "https://www.youtube.com/watch?v=VIDEO_ID"
 
 Use **`--work-dir`** or **`--no-video-cache`** to control where `source.mp4` and intermediates live (see **`docs/ENVIRONMENT.md`**).
 
+## CLI guide (all flags)
+
+Use `humeo --help` for the live source of truth. This table matches `src/humeo/cli.py`.
+
+### Required
+
+| Flag | Meaning |
+|------|---------|
+| `--long-to-shorts URL` | YouTube URL to process (required). |
+
+### Paths and cache behavior
+
+| Flag | Meaning |
+|------|---------|
+| `--output`, `-o` | Output directory for final `short_*.mp4` (default: `./output`). |
+| `--work-dir PATH` | Directory for intermediate artifacts (`source.mp4`, `transcript.json`, caches). |
+| `--no-video-cache` | Disable per-video cache dirs; uses `./.humeo_work` unless `--work-dir` is set. |
+| `--cache-root PATH` | Override cache root (env equivalent: `HUMEO_CACHE_ROOT`). |
+| `--clean-run` | Fresh run: disables video cache, forces all model stages, overwrites outputs, and auto-creates a timestamped work dir if `--work-dir` is not provided. |
+
+### Model selection and stage forcing
+
+| Flag | Meaning |
+|------|---------|
+| `--gemini-model MODEL_ID` | Gemini model for clip selection / text stages (default from env/config). |
+| `--gemini-vision-model MODEL_ID` | Gemini model for keyframe layout vision (defaults to `GEMINI_VISION_MODEL` or clip model). |
+| `--force-clip-selection` | Re-run clip selection even if `clips.meta.json` cache matches. |
+| `--force-hook-detection` | Re-run Stage 2.25 hook detection even if `hooks.meta.json` cache matches. |
+| `--force-content-pruning` | Re-run Stage 2.5 pruning even if `prune.meta.json` cache matches. |
+| `--force-layout-vision` | Re-run layout vision even if `layout_vision.meta.json` cache matches. |
+| `--no-hook-detection` | Skip Stage 2.25 hook detection (pruning still runs with fallback behavior). |
+
+### Pruning and subtitles
+
+| Flag | Meaning |
+|------|---------|
+| `--prune-level {off,conservative,balanced,aggressive}` | Stage 2.5 aggressiveness (default: `balanced`). |
+| `--subtitle-font-size INT` | Subtitle font size in output pixels (default: `48`). |
+| `--subtitle-margin-v INT` | Bottom subtitle margin in output pixels (default: `160`). |
+| `--subtitle-max-words INT` | Max words per subtitle cue (default: `4`). |
+| `--subtitle-max-cue-sec FLOAT` | Max subtitle cue duration in seconds (default: `2.2`). |
+
+### Logging
+
+| Flag | Meaning |
+|------|---------|
+| `--verbose`, `-v` | Enable debug logging. |
+
+### Common command recipes
+
+```bash
+# Basic run
+humeo --long-to-shorts "https://www.youtube.com/watch?v=VIDEO_ID"
+
+# Full fresh run for debugging / prompt tuning
+humeo --long-to-shorts "https://www.youtube.com/watch?v=VIDEO_ID" --clean-run --verbose
+
+# Re-run only clip selection after prompt edits
+humeo --long-to-shorts "https://www.youtube.com/watch?v=VIDEO_ID" --force-clip-selection
+
+# Keep intermediates in a fixed local folder
+humeo --long-to-shorts "https://www.youtube.com/watch?v=VIDEO_ID" --work-dir .humeo_work
+
+# Compare different prune levels on same source
+humeo --long-to-shorts "https://www.youtube.com/watch?v=VIDEO_ID" --prune-level conservative
+humeo --long-to-shorts "https://www.youtube.com/watch?v=VIDEO_ID" --prune-level aggressive
+```
+
 ## Documentation
 
 | Doc | Purpose |

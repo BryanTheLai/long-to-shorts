@@ -1,0 +1,6 @@
+{
+  "version": 1,
+  "transcript_sha256": "9c7e95cc9ad71c7e2182d939ff0ea68d81bb04947db433871601737fca83dcac",
+  "clips_sha256": "14cf9956a7241214a329c1bc7710021843d188c2ac8e0f9c0bbad666ed721092",
+  "gemini_model": "gemini-3.1-flash-lite-preview"
+}

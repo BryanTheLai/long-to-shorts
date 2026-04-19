@@ -1,0 +1,58 @@
+[Script Info]
+ScriptType: v4.00+
+PlayResX: 1080
+PlayResY: 1920
+WrapStyle: 0
+ScaledBorderAndShadow: yes
+YCbCr Matrix: None
+
+[V4+ Styles]
+Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
+Style: Default,Arial,48,&H00FFFFFF,&H000000FF,&H00000000,&H70000000,-1,0,0,0,100,100,0,0,4,0,0,2,60,60,160,0
+
+[Events]
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+Dialogue: 0,0:00:00.00,0:00:01.44,Default,,0,0,0,,derivatives right It's the
+Dialogue: 0,0:00:01.44,0:00:03.22,Default,,0,0,0,,catalyst that will drive
+Dialogue: 0,0:00:03.22,0:00:04.78,Default,,0,0,0,,the performance of a
+Dialogue: 0,0:00:04.78,0:00:06.32,Default,,0,0,0,,up or down And
+Dialogue: 0,0:00:06.32,0:00:07.32,Default,,0,0,0,,so whereas you may
+Dialogue: 0,0:00:07.32,0:00:08.50,Default,,0,0,0,,want to out some
+Dialogue: 0,0:00:08.50,0:00:09.70,Default,,0,0,0,,of that risk using
+Dialogue: 0,0:00:09.70,0:00:10.94,Default,,0,0,0,,a put call spread
+Dialogue: 0,0:00:10.94,0:00:13.12,Default,,0,0,0,,or many other forms
+Dialogue: 0,0:00:13.12,0:00:14.80,Default,,0,0,0,,of hedging now you
+Dialogue: 0,0:00:14.80,0:00:16.56,Default,,0,0,0,,have direct access to
+Dialogue: 0,0:00:16.56,0:00:18.32,Default,,0,0,0,,those underlying events business
+Dialogue: 0,0:00:18.32,0:00:20.56,Default,,0,0,0,,KPIs macroeconomic events
+Dialogue: 0,0:00:20.56,0:00:22.06,Default,,0,0,0,,where you don't need
+Dialogue: 0,0:00:22.06,0:00:24.24,Default,,0,0,0,,to take on the
+Dialogue: 0,0:00:24.24,0:00:26.34,Default,,0,0,0,,extra risk that is
+Dialogue: 0,0:00:26.34,0:00:28.02,Default,,0,0,0,,associated with the right
+Dialogue: 0,0:00:28.02,0:00:28.96,Default,,0,0,0,,If you don't want
+Dialogue: 0,0:00:28.96,0:00:29.92,Default,,0,0,0,,to be exposed to
+Dialogue: 0,0:00:29.92,0:00:31.90,Default,,0,0,0,,what is in well
+Dialogue: 0,0:00:31.90,0:00:33.68,Default,,0,0,0,,you don't need to
+Dialogue: 0,0:00:33.68,0:00:35.18,Default,,0,0,0,,take on that through
+Dialogue: 0,0:00:35.18,0:00:36.36,Default,,0,0,0,,derivatives which are going
+Dialogue: 0,0:00:36.36,0:00:37.68,Default,,0,0,0,,to have some of
+Dialogue: 0,0:00:37.68,0:00:38.36,Default,,0,0,0,,that in it You
+Dialogue: 0,0:00:38.36,0:00:39.20,Default,,0,0,0,,can go directly to
+Dialogue: 0,0:00:39.20,0:00:41.10,Default,,0,0,0,,the underlying event So
+Dialogue: 0,0:00:41.10,0:00:41.82,Default,,0,0,0,,I think it's a
+Dialogue: 0,0:00:41.82,0:00:43.56,Default,,0,0,0,,really amazing opportunity for
+Dialogue: 0,0:00:43.56,0:00:45.46,Default,,0,0,0,,the markets when we've
+Dialogue: 0,0:00:45.46,0:00:46.62,Default,,0,0,0,,doing this research And
+Dialogue: 0,0:00:46.62,0:00:47.64,Default,,0,0,0,,I'll give a sneak
+Dialogue: 0,0:00:47.64,0:00:49.32,Default,,0,0,0,,preview I think you
+Dialogue: 0,0:00:49.32,0:00:50.42,Default,,0,0,0,,in the medium term
+Dialogue: 0,0:00:50.96,0:00:51.68,Default,,0,0,0,,over the next few
+Dialogue: 0,0:00:51.68,0:00:52.58,Default,,0,0,0,,years we believe that
+Dialogue: 0,0:00:52.58,0:00:53.70,Default,,0,0,0,,this market could explode
+Dialogue: 0,0:00:53.70,0:00:54.98,Default,,0,0,0,,up to five trillion
+Dialogue: 0,0:00:54.98,0:00:56.40,Default,,0,0,0,,dollars in notional volume
+Dialogue: 0,0:00:56.40,0:00:57.60,Default,,0,0,0,,Now right now Cal
+Dialogue: 0,0:00:57.60,0:00:58.44,Default,,0,0,0,,she is on an
+Dialogue: 0,0:00:58.44,0:00:59.78,Default,,0,0,0,,annualized run rate to
+Dialogue: 0,0:00:59.78,0:01:00.58,Default,,0,0,0,,do around one hundred
+Dialogue: 0,0:01:00.58,0:01:00.60,Default,,0,0,0,,and

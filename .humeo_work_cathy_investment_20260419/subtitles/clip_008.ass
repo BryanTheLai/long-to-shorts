@@ -1,0 +1,54 @@
+[Script Info]
+ScriptType: v4.00+
+PlayResX: 1080
+PlayResY: 1920
+WrapStyle: 0
+ScaledBorderAndShadow: yes
+YCbCr Matrix: None
+
+[V4+ Styles]
+Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
+Style: Default,Arial,48,&H00FFFFFF,&H000000FF,&H00000000,&H70000000,-1,0,0,0,100,100,0,0,4,0,0,2,60,60,160,0
+
+[Events]
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+Dialogue: 0,0:00:00.00,0:00:00.86,Default,,0,0,0,,CPI year over year
+Dialogue: 0,0:00:00.86,0:00:03.28,Default,,0,0,0,,percent change Is
+Dialogue: 0,0:00:03.28,0:00:04.89,Default,,0,0,0,,it going to be
+Dialogue: 0,0:00:04.89,0:00:06.69,Default,,0,0,0,,– is the PPI
+Dialogue: 0,0:00:06.69,0:00:07.84,Default,,0,0,0,,inflation rate going to
+Dialogue: 0,0:00:07.84,0:00:09.41,Default,,0,0,0,,be above the CPI
+Dialogue: 0,0:00:09.41,0:00:10.63,Default,,0,0,0,,inflation rate for three
+Dialogue: 0,0:00:10.63,0:00:13.34,Default,,0,0,0,,consecutive months in 2026
+Dialogue: 0,0:00:13.42,0:00:15.11,Default,,0,0,0,,So you can see
+Dialogue: 0,0:00:15.11,0:00:17.05,Default,,0,0,0,,here that the market
+Dialogue: 0,0:00:17.05,0:00:19.98,Default,,0,0,0,,is pretty sure that
+Dialogue: 0,0:00:19.98,0:00:21.61,Default,,0,0,0,,producer price inflation is
+Dialogue: 0,0:00:21.61,0:00:23.97,Default,,0,0,0,,going to consumer price
+Dialogue: 0,0:00:23.97,0:00:25.05,Default,,0,0,0,,inflation on a year
+Dialogue: 0,0:00:25.05,0:00:26.97,Default,,0,0,0,,over year basis for
+Dialogue: 0,0:00:26.97,0:00:28.81,Default,,0,0,0,,three consecutive months this
+Dialogue: 0,0:00:28.81,0:00:30.27,Default,,0,0,0,,year Now that's very
+Dialogue: 0,0:00:29.84,0:00:32.81,Default,,0,0,0,,interesting Now
+Dialogue: 0,0:00:32.81,0:00:34.00,Default,,0,0,0,,what is this saying
+Dialogue: 0,0:00:34.06,0:00:35.36,Default,,0,0,0,,Well you can see
+Dialogue: 0,0:00:35.36,0:00:37.41,Default,,0,0,0,,it started out closer
+Dialogue: 0,0:00:37.41,0:00:39.81,Default,,0,0,0,,to 25 or
+Dialogue: 0,0:00:39.81,0:00:42.19,Default,,0,0,0,,20 percent probability moved
+Dialogue: 0,0:00:42.19,0:00:44.97,Default,,0,0,0,,to 30 as the
+Dialogue: 0,0:00:44.97,0:00:46.36,Default,,0,0,0,,initial stages of the
+Dialogue: 0,0:00:46.36,0:00:48.17,Default,,0,0,0,,war in took off
+Dialogue: 0,0:00:48.69,0:00:50.17,Default,,0,0,0,,And then everyone thought
+Dialogue: 0,0:00:50.17,0:00:50.50,Default,,0,0,0,,it was going to
+Dialogue: 0,0:00:50.50,0:00:52.41,Default,,0,0,0,,be over quickly settled
+Dialogue: 0,0:00:52.41,0:00:53.31,Default,,0,0,0,,back and you can
+Dialogue: 0,0:00:53.31,0:00:55.06,Default,,0,0,0,,see what has since
+Dialogue: 0,0:00:55.58,0:00:56.50,Default,,0,0,0,,This is more extended
+Dialogue: 0,0:00:56.50,0:00:59.53,Default,,0,0,0,,than many observers predicted
+Dialogue: 0,0:00:59.94,0:01:01.22,Default,,0,0,0,,And so that's where
+Dialogue: 0,0:01:01.22,0:01:03.20,Default,,0,0,0,,there's certainty so far
+Dialogue: 0,0:01:03.20,0:01:04.11,Default,,0,0,0,,as you can see
+Dialogue: 0,0:01:04.11,0:01:05.36,Default,,0,0,0,,on the next chart
+Dialogue: 0,0:01:05.70,0:01:08.31,Default,,0,0,0,,What's interesting about this
+Dialogue: 0,0:01:08.31,0:01:10.13,Default,,0,0,0,,is we already have
+Dialogue: 0,0:01:10.13,0:01:10.13,Default,,0,0,0,,two

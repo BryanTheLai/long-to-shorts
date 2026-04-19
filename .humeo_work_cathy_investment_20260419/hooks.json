@@ -1,0 +1,60 @@
+{
+  "hooks": [
+    {
+      "clip_id": "001",
+      "hook_start_sec": 0.5,
+      "hook_end_sec": 4.48,
+      "hook_text": "Over the next few years, we believe that this market could explode up to five trillion dollars",
+      "reason": "This sentence provides a bold, quantified prediction immediately, which is the most compelling way to capture attention."
+    },
+    {
+      "clip_id": "002",
+      "hook_start_sec": 42.54,
+      "hook_end_sec": 48.8,
+      "hook_text": "This could be the beginning of a resurgence in active equity management.",
+      "reason": "This is a clear, declarative statement that summarizes the entire topic of the clip without needing any prior context."
+    },
+    {
+      "clip_id": "003",
+      "hook_start_sec": 24.69,
+      "hook_end_sec": 29.85,
+      "hook_text": "Really, you should be comparing debt to equity.",
+      "reason": "This is a direct, contrarian claim that challenges conventional financial wisdom, making it an excellent hook."
+    },
+    {
+      "clip_id": "004",
+      "hook_start_sec": 0.18,
+      "hook_end_sec": 5.74,
+      "hook_text": "It's the underlying catalyst that will drive the performance of a stock up or down.",
+      "reason": "This sentence defines the core value proposition of the tools being discussed in a way that is immediately understandable to a general audience."
+    },
+    {
+      "clip_id": "005",
+      "hook_start_sec": 39.75,
+      "hook_end_sec": 45.72,
+      "hook_text": "We think Trumponomics resembles greatly, actually, Reaganomics.",
+      "reason": "Mentioning a specific, recognizable historical comparison (Reaganomics) creates an immediate mental anchor for the viewer."
+    },
+    {
+      "clip_id": "006",
+      "hook_start_sec": 48.75,
+      "hook_end_sec": 51.45,
+      "hook_text": "All of those are highly deflationary trends.",
+      "reason": "This is a punchy, definitive summary statement that creates curiosity about which trends are being referred to."
+    },
+    {
+      "clip_id": "007",
+      "hook_start_sec": 11.5,
+      "hook_end_sec": 18.33,
+      "hook_text": "We think that productivity growth is going to soar in the next few years.",
+      "reason": "This is a strong, forward-looking claim that sets the stage for the rest of the clip's argument."
+    },
+    {
+      "clip_id": "008",
+      "hook_start_sec": 16.64,
+      "hook_end_sec": 23.0,
+      "hook_text": "The market is pretty sure that producer price inflation is going to surpass consumer price inflation.",
+      "reason": "This sentence presents a clear, high-stakes market prediction that is easy for the viewer to grasp."
+    }
+  ]
+}

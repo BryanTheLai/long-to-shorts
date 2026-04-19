@@ -1,0 +1,38 @@
+[Script Info]
+ScriptType: v4.00+
+PlayResX: 1080
+PlayResY: 1920
+WrapStyle: 0
+ScaledBorderAndShadow: yes
+YCbCr Matrix: None
+
+[V4+ Styles]
+Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
+Style: Default,Arial,48,&H00FFFFFF,&H000000FF,&H00000000,&H70000000,-1,0,0,0,100,100,0,0,4,0,0,2,60,60,160,0
+
+[Events]
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+Dialogue: 0,0:00:00.02,0:00:02.22,Default,,0,0,0,,is the beginnings I
+Dialogue: 0,0:00:02.22,0:00:04.46,Default,,0,0,0,,think of bringing
+Dialogue: 0,0:00:04.46,0:00:07.16,Default,,0,0,0,,active
+Dialogue: 0,0:00:07.16,0:00:10.20,Default,,0,0,0,,equity management back
+Dialogue: 0,0:00:10.20,0:00:13.20,Default,,0,0,0,,into style because we're
+Dialogue: 0,0:00:13.20,0:00:15.10,Default,,0,0,0,,talking about events that
+Dialogue: 0,0:00:15.10,0:00:16.76,Default,,0,0,0,,should move stocks And
+Dialogue: 0,0:00:16.76,0:00:17.38,Default,,0,0,0,,if we have more
+Dialogue: 0,0:00:17.38,0:00:19.94,Default,,0,0,0,,people looking for and
+Dialogue: 0,0:00:19.94,0:00:22.48,Default,,0,0,0,,at those events they're
+Dialogue: 0,0:00:22.48,0:00:23.48,Default,,0,0,0,,going to be interested
+Dialogue: 0,0:00:23.48,0:00:25.94,Default,,0,0,0,,in investing in some
+Dialogue: 0,0:00:25.94,0:00:28.82,Default,,0,0,0,,of these opportunities
+Dialogue: 0,0:00:28.82,0:00:31.20,Default,,0,0,0,,and maybe taking a
+Dialogue: 0,0:00:31.20,0:00:31.94,Default,,0,0,0,,little bit out of
+Dialogue: 0,0:00:31.94,0:00:33.92,Default,,0,0,0,,that passive portfolio that
+Dialogue: 0,0:00:33.92,0:00:36.46,Default,,0,0,0,,is tied to
+Dialogue: 0,0:00:36.46,0:00:38.48,Default,,0,0,0,,the broader based indexes
+Dialogue: 0,0:00:38.70,0:00:40.42,Default,,0,0,0,,So I'm pretty excited
+Dialogue: 0,0:00:40.42,0:00:42.20,Default,,0,0,0,,about this This could
+Dialogue: 0,0:00:42.20,0:00:43.84,Default,,0,0,0,,be the of a
+Dialogue: 0,0:00:43.84,0:00:45.50,Default,,0,0,0,,resurgence in active equity
+Dialogue: 0,0:00:45.50,0:00:47.54,Default,,0,0,0,,management Yeah absolutely
+Dialogue: 0,0:00:47.74,0:00:48.80,Default,,0,0,0,,And I think when

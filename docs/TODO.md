@@ -25,6 +25,8 @@ In one line: **ingest → clip selection → hook → inner-clip prune → one k
 
 - **`narrative_context.json`** before clip selection (§0 bullet) — **not built.** Clip selection still depends only on transcript (+ hashes for cache), not a visual narrative artefact.
 - **Clip selector consuming that artefact** — **not built** (same reason).
+- **Many keyframes per clip for layout vision** — **not built.** The product still uses one midpoint keyframe per selected clip; there is no intra-clip key-change detector for color shift, light-intensity change, OCR/text change, layout/person-count change, or model-assisted dedupe.
+- **Gemini-facing bbox contract at integer `[0,1000]`** — **not built.** The current prompt/runtime still asks Gemini for normalized `[0,1]` coords end-to-end.
 - **“Kill letterboxing” as an explicit milestone closure** — treat as **open** until tracked as a closed issue with before/after samples; layout math exists but this doc’s acceptance criterion was never formally signed off here.
 - **§1.3 cross-comments on the two `.gitignore` files** — still **optional**; root and `humeo-core/.gitignore` do not yet have the one-line pointers suggested below.
 
@@ -325,7 +327,10 @@ Concrete evidence from the cached run at
 
 That `raw` block is Gemini returning **pixel coordinates, not normalized
 [0..1] floats** — exactly what the vision prompt forbids, but the model did
-it anyway.
+it anyway. Even if the model behaved perfectly, asking Gemini for tiny
+normalized decimals may be the wrong boundary contract; the operator wants
+the Gemini-facing format to be **integer `[0,1000]`** and the Python side to
+normalize that back to `[0,1]`.
 
 Now trace through `src/humeo/layout_vision.py::_parse_bbox`:
 
@@ -402,14 +407,14 @@ So there are **three independent failure modes**:
 
 ### 3.2 Solutions, ranked
 
-#### Fix F1 — make the vision call actually enforce normalized bboxes
+#### Fix F1 — use a Gemini-friendly bbox contract, then normalize internally
 
 | # | Solution | Guarantee | Cost | Breaking? |
 |---|----------|----------|------|-----------|
-| **1 (chosen)** | Use `types.GenerateContentConfig(response_schema=GeminiLayoutVisionResponse)` where `GeminiLayoutVisionResponse` is a Pydantic model with `BoundingBox(x1=Field(ge=0, le=1), …)`. Confirmed via Context7 on `/googleapis/python-genai`: the Gen AI SDK passes the Pydantic JSON schema to Gemini's **structured output** system, so responses are guaranteed to validate. | Strong. | 0 extra calls. | No — same JSON shape, stricter enforcement. |
-| **2 (chosen, additive to 1)** | Defensive normalizer in `_parse_bbox`: if any coord is > 1.5, divide all four by `(src_w, src_h)` probed from the keyframe. Log a `warning`. This handles cases where (1) fails for any reason (older models, dev without structured-output). | Strong backup. | 0. | No. |
-| 3 | Replace `except Exception: return None` with `except Exception as e: logger.warning(...)` only. | Audibility only; doesn't fix silent failures functionally. | 0. | No. |
-| 4 | Put `additional_properties=false` + `required=[...]` via raw schema dict. | Same as 1 but harder to maintain. | 0. | No. |
+| **1 (chosen)** | Use `types.GenerateContentConfig(response_schema=GeminiLayoutVisionResponse)` where the **Gemini-specific** bbox model uses integer coords in **`[0,1000]`**, not normalized floats. Normalize to the internal `BoundingBox` (`[0,1]`) only after parse. | Strong at the model boundary. | 0 extra calls. | No — internal layout/render contract stays the same. |
+| **2 (chosen, additive to 1)** | Add a defensive adapter in `_parse_bbox` / `_maybe_normalize_bbox` that accepts the preferred `0..1000` format, legacy `0..1` floats, and accidental pixel coords. Log which branch fired. | Strong backup. | 0. | No. |
+| 3 | Keep asking for normalized `0..1` and only tighten the schema. | Better than today, but still a brittle model-facing contract. | 0. | No. |
+| 4 | Put `additional_properties=false` + `required=[...]` via raw schema dict. | Same structured-output family as 1, but harder to maintain. | 0. | No. |
 
 → **Ship (1) + (2).** (3) naturally falls out of (2).
 
@@ -457,7 +462,8 @@ Cache is invalidated by bumping `layout_vision.meta.json.vision_schema_version` 
    - Add `split_fit: Literal["fit", "fill"] = "fill"` to `LayoutInstruction`.
    - Add `GeminiLayoutVisionResponse` (a Pydantic model used as the
      `response_schema` argument) mirroring the JSON the vision prompt asks
-     for, with the `BoundingBox` constraints.
+     for, but with **Gemini-facing** bbox fields in integer `0..1000`
+     coordinates rather than the internal normalized `BoundingBox`.
 2. **`humeo-core/src/humeo_core/primitives/layouts.py`**:
    - In `plan_split_chart_person`, branch on `instruction.split_fit`:
      - `"fit"` → current filtergraph.
@@ -467,7 +473,7 @@ Cache is invalidated by bumping `layout_vision.meta.json.vision_schema_version` 
 3. **`src/humeo/layout_vision.py`**:
    - Switch the vision call to
      `config=types.GenerateContentConfig(response_schema=GeminiLayoutVisionResponse, temperature=0.2, response_mime_type="application/json")`.
-   - Add `_maybe_normalize_bbox(raw_dict, src_w, src_h)` that divides coords by probed dims when any is > 1.5; logs a `warning` when it fires.
+   - Add `_maybe_normalize_bbox(raw_dict, src_w, src_h)` that prefers `0..1000` Gemini coords, still accepts legacy `0..1`, and falls back to probed image dims for accidental pixel outputs; log a `warning` when the fallback path fires.
    - Replace the silent `except Exception: return None` with `except Exception as e: logger.warning("dropping malformed bbox: %s", e); return None`.
    - In `_instruction_from_gemini_json`, if the vision layout is
      `split_chart_person` but either bbox is None, demote to
@@ -484,9 +490,11 @@ Cache is invalidated by bumping `layout_vision.meta.json.vision_schema_version` 
      - `test_split_with_bbox_regions_uses_fill_by_default` — vision-derived
        instructions now render without black bars.
    - `tests/test_layout_vision_unit.py`:
-     - `test_pixel_bboxes_get_normalized` — fed a pixel-scale bbox,
-       `_instruction_from_gemini_json` returns non-None `split_*_region` with
-       0..1 coords.
+     - `test_thousand_scale_bboxes_get_normalized` — fed a Gemini-style
+       `0..1000` bbox, `_instruction_from_gemini_json` returns non-None
+       `split_*_region` with `0..1` coords.
+     - `test_pixel_bboxes_get_normalized_as_fallback` — accidental
+       pixel-scale bbox still survives the adapter path.
      - `test_silent_parse_failure_now_logs_warning` — caplog asserts a
        warning was emitted.
 
@@ -543,10 +551,24 @@ order.
 - [ ] Add the `test_split_fill_*` tests.
 - [ ] Switch `layout_vision._call_gemini_vision` to
       `response_schema=GeminiLayoutVisionResponse`.
+- [ ] Change the Gemini-facing bbox prompt/schema to integer `[0,1000]`.
 - [ ] Add `_maybe_normalize_bbox` + warning logs.
-- [ ] Add pixel-bbox regression tests.
+- [ ] Add `0..1000` regression tests and pixel-bbox fallback tests.
 - [ ] Smoke-render the Cathie Wood clip 005 locally and confirm the black
       bars are gone (visual sign-off).
+
+### Phase 2.5 — keyframe granularity (operator addition)
+
+- [ ] Replace the single midpoint keyframe per clip with multiple candidate
+      keyframes per clip.
+- [ ] Implement an intra-clip key-change detector; signals are not limited
+      to scene boundaries, color / histogram shifts, light-intensity
+      changes, OCR/text changes, person-count changes, layout-class changes,
+      or a cheap Gemini merge/dedupe pass.
+- [ ] Decide whether frame-level layout opinions collapse to one clip-level
+      vote or expand `layout_vision.json` into a per-segment timeline.
+- [ ] Add tests/fixtures proving one clip can change layout inside the clip
+      without relying on a single midpoint frame.
 
 ### Phase 3 — narrative context (Section 2, step A)
 
