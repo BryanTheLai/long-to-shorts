@@ -13,6 +13,7 @@ from humeo.layout_vision import (
     infer_layout_instructions,
     _instruction_from_gemini_json,
 )
+from humeo_core.primitives.layouts import plan_layout
 from humeo_core.schemas import BoundingBox, LayoutKind
 
 
@@ -137,6 +138,39 @@ def test_instruction_from_gemini_json_accepts_0_to_1000_bboxes():
     assert instr.split_chart_region is not None
     assert instr.split_chart_region.x2 == 0.58
     assert any("normalized gemini_1000" in warning for warning in warnings)
+
+
+def test_split_chart_person_face_bbox_emits_render_friendly_regions():
+    data = {
+        "layout": "split_chart_person",
+        "person_bbox": {"x1": 0.59, "y1": 0.072, "x2": 1.00, "y2": 1.00},
+        "face_bbox": {"x1": 0.72, "y1": 0.082, "x2": 0.86, "y2": 0.48},
+        "chart_bbox": {"x1": 0.021, "y1": 0.028, "x2": 0.584, "y2": 0.722},
+        "reason": "chart left, speaker right",
+    }
+    instr = _instruction_from_gemini_json("001", data)
+
+    assert instr.layout == LayoutKind.SPLIT_CHART_PERSON
+    assert instr.split_person_region is not None
+    assert instr.split_person_region.y1 <= 0.001
+    assert instr.split_person_region.y2 < 0.85
+    assert instr.top_band_ratio < 0.45
+
+
+def test_split_chart_person_render_friendly_regions_reduce_crop_pressure():
+    data = {
+        "layout": "split_chart_person",
+        "person_bbox": {"x1": 0.59, "y1": 0.072, "x2": 1.00, "y2": 1.00},
+        "face_bbox": {"x1": 0.72, "y1": 0.082, "x2": 0.86, "y2": 0.48},
+        "chart_bbox": {"x1": 0.021, "y1": 0.028, "x2": 0.584, "y2": 0.722},
+        "reason": "chart left, speaker right",
+    }
+    instr = _instruction_from_gemini_json("001", data)
+    fg = plan_layout(instr, out_w=1080, out_h=1920, src_w=1920, src_h=1080).filtergraph
+
+    assert "scale=1080:730" in fg
+    assert "scale=1080:1190" in fg
+    assert "crop=794:860:1126:0" in fg
 
 
 def test_zoom_call_center_uses_subject_width_not_hard_floor():

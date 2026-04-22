@@ -32,7 +32,7 @@ logger = logging.getLogger(__name__)
 LAYOUT_VISION_META = "layout_vision.meta.json"
 LAYOUT_VISION_JSON = "layout_vision.json"
 LAYOUT_VISION_META_VERSION = 3
-_LAYOUT_POLICY_VERSION = 2
+_LAYOUT_POLICY_VERSION = 3
 _MAX_SAMPLED_FRAMES = 6
 _COARSE_FRAME_STEP_SEC = 1.0
 _VISION_HTTP_TIMEOUT_MS = 120_000
@@ -44,6 +44,12 @@ _VISION_RETRY_INITIAL_DELAY_SEC = 1.0
 _VISION_RETRY_MAX_DELAY_SEC = 4.0
 _VISION_RETRY_EXP_BASE = 2.0
 _VISION_RETRY_JITTER = 0.0
+_MIN_SPLIT_STRIP_FRAC = 0.2
+_SPLIT_TOP_RATIO_MIN = 0.32
+_SPLIT_TOP_RATIO_MAX = 0.48
+_SPLIT_FACE_REGION_MIN_HEIGHT = 0.62
+_SPLIT_FACE_REGION_HEIGHT_MULT = 2.0
+_SPLIT_FACE_TOP_PAD_MULT = 0.30
 
 GEMINI_LAYOUT_VISION_PROMPT = """You are framing a vertical short (9:16) from MULTIPLE keyframes of the same clip.
 
@@ -269,6 +275,55 @@ def _subject_width_zoom(person: BoundingBox | None, face: BoundingBox | None) ->
     return round(max(1.0, min(1.3, zoom)), 3)
 
 
+def _render_safe_split_person_region(
+    person: BoundingBox,
+    face: BoundingBox | None,
+) -> BoundingBox:
+    """Convert a detection box into a render-friendly split crop region.
+
+    Raw ``person_bbox`` is asked to cover head + upper body. Feeding that
+    directly into the split renderer makes the bottom band too tall and cover
+    crop trims the head. When we have a sane ``face_bbox``, bias the region
+    toward head + shoulders instead of the full torso.
+    """
+
+    if _face_center_x(face, person) is None or face is None:
+        return person
+
+    face_h = max(0.0, face.y2 - face.y1)
+    if face_h <= 0.0:
+        return person
+
+    target_h = min(
+        person.y2 - person.y1,
+        max(_SPLIT_FACE_REGION_MIN_HEIGHT, face_h * _SPLIT_FACE_REGION_HEIGHT_MULT),
+    )
+    top = max(0.0, min(person.y1, face.y1 - face_h * _SPLIT_FACE_TOP_PAD_MULT))
+    bottom = min(person.y2, top + target_h)
+    if bottom - top < target_h:
+        top = max(0.0, bottom - target_h)
+    if bottom - top <= face_h:
+        return person
+
+    return person.model_copy(update={"y1": top, "y2": bottom})
+
+
+def _split_chart_person_top_band_ratio(
+    chart: BoundingBox,
+    person: BoundingBox,
+) -> float:
+    """Allocate stacked-band height from the two source-region aspect needs."""
+
+    seam = (chart.x2 + person.x1) / 2.0
+    seam = max(_MIN_SPLIT_STRIP_FRAC, min(1.0 - _MIN_SPLIT_STRIP_FRAC, seam))
+    chart_w = max(1e-6, seam)
+    person_w = max(1e-6, 1.0 - seam)
+    chart_need = max(1e-6, (chart.y2 - chart.y1) / chart_w)
+    person_need = max(1e-6, (person.y2 - person.y1) / person_w)
+    ratio = chart_need / (chart_need + person_need)
+    return round(max(_SPLIT_TOP_RATIO_MIN, min(_SPLIT_TOP_RATIO_MAX, ratio)), 3)
+
+
 def _instruction_from_gemini_json(
     scene_id: str,
     data: dict[str, Any],
@@ -359,8 +414,10 @@ def _instruction_from_gemini_json(
         updates["zoom"] = _subject_width_zoom(pb, fb)
 
     if kind == LayoutKind.SPLIT_CHART_PERSON and pb is not None and cb is not None:
+        render_person = _render_safe_split_person_region(pb, fb)
         updates["split_chart_region"] = cb
-        updates["split_person_region"] = pb
+        updates["split_person_region"] = render_person
+        updates["top_band_ratio"] = _split_chart_person_top_band_ratio(cb, render_person)
     elif kind == LayoutKind.SPLIT_TWO_PERSONS and pb is not None and p2 is not None:
         left, right = sorted((pb, p2), key=lambda b: b.center_x)
         updates["split_person_region"] = left
