@@ -395,7 +395,7 @@
         </details>
 
         <details class="stage-detail" open>
-          <summary><span>2 · Clip selection (Gemini, text-only)</span></summary>
+          <summary><span>2 · Clip selection (structured LLM, text-only)</span></summary>
           <div class="body">
             <div class="label">Artifacts</div>
             <p><code>clips.json</code>, <code>clips.meta.json</code>, <code>clip_selection_raw.json</code>.</p>
@@ -405,13 +405,13 @@
               <li>Pool size default 12; each candidate parses as <code>Clip</code>, <code>virality_score</code> ∈ [0,1].</li>
               <li>Sort by score; <code>needs_review=True</code> loses tiebreak vs same score.</li>
               <li>Keep: score ≥ threshold (0.70 default), not reviewed-out; if count &lt; min (5), fill from top until max (8).</li>
-              <li>Pydantic: <code>humeo_core.schemas.Clip</code>. Cache skip: <code>clips.meta.json</code> matches transcript hash + model.</li>
+              <li>Pydantic: <code>humeo_core.schemas.Clip</code>. Cache skip: <code>clips.meta.json</code> matches transcript hash + LLM identity + ranking policy.</li>
             </ul>
           </div>
         </details>
 
         <details class="stage-detail" open>
-          <summary><span>2.25 · Hook detection (Gemini)</span></summary>
+          <summary><span>2.25 · Hook detection (structured LLM)</span></summary>
           <div class="body">
             <div class="label">Artifacts</div>
             <p><code>hooks.json</code>, <code>hooks.meta.json</code>, <code>hooks_raw.json</code>.</p>
@@ -426,7 +426,7 @@
         </details>
 
         <details class="stage-detail" open>
-          <summary><span>2.5 · Content pruning (coarse trim, Gemini)</span></summary>
+          <summary><span>2.5 · Content pruning (coarse trim, structured LLM)</span></summary>
           <div class="body">
             <div class="label">Artifacts</div>
             <p><code>prune.json</code>, <code>prune_raw.json</code>, <code>prune.meta.json</code>.</p>
@@ -444,16 +444,16 @@
         </details>
 
         <details class="stage-detail" open>
-          <summary><span>3 · Keyframes + layout vision (Gemini multimodal)</span></summary>
+          <summary><span>3 · Keyframes + layout vision (structured multimodal LLM)</span></summary>
           <div class="body">
             <div class="label">Artifacts</div>
             <p><code>work_dir/keyframes/*.jpg</code>, <code>layout_vision.json</code>, <code>layout_vision.meta.json</code>.</p>
             <div class="label">Logic</div>
             <ul>
-              <li><code>clip_for_render(clip)</code> → trimmed timeline; one <code>Scene</code> per clip for keyframe time range.</li>
-              <li><code>extract_keyframes</code>: ffmpeg snapshot, one image per clip.</li>
-              <li>Gemini vision: JSON → <code>LayoutInstruction</code> (layout enum; normalized bboxes for splits). Prompt string: <code>GEMINI_LAYOUT_VISION_PROMPT</code> in <code>layout_vision.py</code>.</li>
-              <li>Cache key: transcript hash + clips hash + vision model id.</li>
+              <li><code>clip_for_render(clip)</code> → trimmed timeline, then Stage 3 samples multiple frames per clip.</li>
+              <li>Sampling mixes uniform coverage with frame-diff peaks and writes per-clip images under <code>work_dir/keyframes/&lt;clip_id&gt;/</code>.</li>
+              <li>Structured multimodal response → merged <code>LayoutInstruction</code> (five layouts; 0..1000 model-facing boxes normalized back to runtime bboxes). Prompt string: <code>GEMINI_LAYOUT_VISION_PROMPT</code> in <code>layout_vision.py</code>.</li>
+              <li>Cache key: transcript hash + clip windows hash + vision-model LLM identity.</li>
             </ul>
           </div>
         </details>

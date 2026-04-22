@@ -7,6 +7,8 @@ This is the single reference for how Humeo reads configuration from the environm
 1. On import, `humeo.config` runs `humeo.env.bootstrap_env()`, which calls `python-dotenv`’s `load_dotenv()` for the **current working directory** (typically your repo root).
 2. Values already set in the process environment **win** over `.env` (dotenv default).
 
+Practical rule: run the product from the repo venv with `uv run humeo ...` so the active dependencies and the current `.env` resolve from the same place.
+
 Copy `.env.example` to `.env` and fill in secrets. `.env` is gitignored.
 
 ## Stage LLMs (stages 2 / 2.25 / 2.5 / 3)
@@ -55,7 +57,7 @@ Templates live under `src/humeo/prompts/` in the repo (`clip_selection_system.ji
 |----------|----------|
 | **`HUMEO_PROMPTS_DIR`** | If set to a directory path, Humeo loads those `.jinja2` files instead of the built-ins (custom prompts without editing the package). |
 
-Clip duration bounds for the LLM match `MIN_CLIP_DURATION_SEC` / `MAX_CLIP_DURATION_SEC` in `humeo.config` (defaults **50–90** seconds). Edit `config.py` or your forked templates to change what Gemini is asked for.
+Clip duration bounds for the clip-selection stage match `MIN_CLIP_DURATION_SEC` / `MAX_CLIP_DURATION_SEC` in `humeo.config` (defaults **50–90** seconds). Edit `config.py` or your forked templates to change what the model is asked for.
 
 ### Per-clip layout (product pipeline)
 
@@ -85,12 +87,14 @@ Use **`--force-clip-selection`** to always re-run. Legacy v1 meta files that use
 
 When **`layout_vision.json`** and **`layout_vision.meta.json`** exist and the cached **LLM identity** still matches the current run, the pipeline **skips** layout vision calls.
 
+Stage 3 samples multiple frames per clip with `cv2` (uniform coverage plus frame-diff peaks), sends them to the configured multimodal provider, and merges those frame opinions into one render-safe `LayoutInstruction`. `opencv-python` is part of the default app install for this reason.
+
 | Artifact | Role |
 |----------|------|
-| **`layout_vision.meta.json`** | Transcript hash, SHA256 of **`clips.json`**, `llm`, layout policy version |
+| **`layout_vision.meta.json`** | Transcript hash, `clip_windows_sha256`, `llm`, layout policy version |
 | **`layout_vision.json`** | Per-clip `instruction` (serialized `LayoutInstruction`) + `raw` (model JSON or error) |
 
-Use **`--force-layout-vision`** to always re-run. Changing **`clips.json`** (any byte) invalidates the layout cache.
+Use **`--force-layout-vision`** to always re-run. Changing the rendered clip windows (start/end, trims, keep ranges) invalidates the layout cache; editing unrelated clip metadata does not.
 
 ## Video cache
 
@@ -116,10 +120,17 @@ After a successful download, yt-dlp writes **`source.info.json`** next to **`sou
 | `--llm-provider` | `HUMEO_LLM_PROVIDER` |
 | `--llm-model` | `HUMEO_LLM_MODEL` (`--gemini-model` still works as a legacy alias) |
 | `--llm-vision-model` | `HUMEO_LLM_VISION_MODEL` (`--gemini-vision-model` still works as a legacy alias) |
+| `--work-dir` | Explicit intermediate-artifact directory |
 | `--cache-root` | `HUMEO_CACHE_ROOT` |
 | `--no-video-cache` | Disables per-video cache dirs |
 | `--force-clip-selection` | Ignores clip-selection cache |
+| `--force-hook-detection` | Ignores hook-detection cache |
+| `--force-content-pruning` | Ignores pruning cache |
 | `--force-layout-vision` | Ignores layout vision cache |
+| `--no-hook-detection` | Skips Stage 2.25 entirely |
+| `--start-at`, `--stop-after` | Resume / stop at a named stage using cached artifacts |
+| `--inspect-stage`, `--clip-id` | Dump stable stage-inspection JSON from an existing work dir |
+| `--clean-run` | Forces a fresh work dir and bypasses cache reuse |
 
 ## See also
 

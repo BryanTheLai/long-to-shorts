@@ -1,4 +1,5 @@
-(base) (long-to-shorts) PS C:\Users\wbrya\OneDrive\Documents\GitHub\long-to-shorts> humeo --long-to-shorts "https://www.youtube.com/watch?v=PdVv_vLkUgk" --clean-run --verbose
+Historical example verbose log. Current docs use `uv run humeo ...` from the repo venv.
+(base) (long-to-shorts) PS C:\Users\wbrya\OneDrive\Documents\GitHub\long-to-shorts> uv run humeo --long-to-shorts "https://www.youtube.com/watch?v=PdVv_vLkUgk" --clean-run --verbose
 17:02:52 | INFO    | humeo.pipeline | ============================================================
 17:02:52 | INFO    | humeo.pipeline | HUMEO PIPELINE START
 17:02:52 | INFO    | humeo.pipeline | URL: https://www.youtube.com/watch?v=PdVv_vLkUgk

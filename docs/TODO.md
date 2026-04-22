@@ -5,12 +5,17 @@ multiple solutions ranked, the chosen path, and concrete edits with no breaking
 changes. References back to `docs/hive-paper/hive_paper_blunt_guide.md` and
 `docs/hive-paper/PAPER_BREAKDOWN.md`.
 
+This file now mixes **historical design work** with **still-open roadmap items**.
+For current runtime truth, use `docs/PIPELINE.md`. For the current gap list,
+use `docs/PROJECT_ISSUES.md`. Treat the status snapshot below as the source of
+truth for how much of this TODO has already shipped.
+
 Everything below is **additive** to the current schemas. Old callers keep
 working. Old cache files keep working (with a one-line meta version bump).
 
 ---
 
-## Status snapshot (maintainer log, 2026-04-18)
+## Status snapshot (maintainer log, 2026-04-22)
 
 This section is only “what shipped vs what this file still proposes.” It does
 not replace the detailed sections below.
@@ -19,15 +24,17 @@ not replace the detailed sections below.
 
 Do **not** duplicate the stage list here — **`docs/PIPELINE.md`** is canonical (`run_pipeline` in `src/humeo/pipeline.py`).
 
-In one line: **ingest → clip selection → hook → inner-clip prune → one keyframe per clip + layout vision → ASS + ffmpeg render**; strict `humeo_core.schemas`; transcript-only at clip-select time, vision after clips exist. Chronology: **`docs/SOLUTIONS.md`** §6.
+In one line: **ingest → clip selection → hook → inner-clip prune → multi-frame layout vision → ASS + ffmpeg render**; strict `humeo_core.schemas`; transcript-only at clip-select time, vision after clips exist. Chronology: **`docs/SOLUTIONS.md`** §6.
 
 ### Not implemented yet (this TODO’s “north star” extras)
 
 - **`narrative_context.json`** before clip selection (§0 bullet) — **not built.** Clip selection still depends only on transcript (+ hashes for cache), not a visual narrative artefact.
 - **Clip selector consuming that artefact** — **not built** (same reason).
-- **Many keyframes per clip for layout vision** — **not built.** The product still uses one midpoint keyframe per selected clip; there is no intra-clip key-change detector for color shift, light-intensity change, OCR/text change, layout/person-count change, or model-assisted dedupe.
-- **Gemini-facing bbox contract at integer `[0,1000]`** — **not built.** The current prompt/runtime still asks Gemini for normalized `[0,1]` coords end-to-end.
-- **“Kill letterboxing” as an explicit milestone closure** — treat as **open** until tracked as a closed issue with before/after samples; layout math exists but this doc’s acceptance criterion was never formally signed off here.
+- **Many keyframes per clip for layout vision** — **partially shipped.** Stage 3 now samples multiple frames per clip (uniform coverage + frame-diff peaks) and merges them into one clip-level layout instruction. What is still **not built** is a time-varying layout timeline.
+- **Model-facing bbox contract at integer `[0,1000]`** — **shipped.** Stage 3 normalizes those boxes back to the internal `[0,1]` schema and still accepts legacy normalized boxes / accidental pixel boxes defensively.
+- **`response_schema` at the provider boundary** — **shipped** for clip selection and Stage 3 layout vision.
+- **“Kill letterboxing” as an explicit milestone closure** — layout math and tests are already in place; remaining work, if any, is doc hygiene and regression evidence rather than core render math.
+- **Stage 3 fallback safety** — **shipped.** When frame sampling or the multimodal call fails, the pipeline now preserves `clip.layout_hint` instead of forcing `sit_center`.
 - **§1.3 cross-comments on the two `.gitignore` files** — still **optional**; root and `humeo-core/.gitignore` do not yet have the one-line pointers suggested below.
 
 ### Operational note: Gemini `503 UNAVAILABLE` (seen 2026-04-18)
@@ -35,8 +42,9 @@ In one line: **ingest → clip selection → hook → inner-clip prune → one k
 If clip selection fails after three attempts with
 `503 UNAVAILABLE` / “high demand” for `gemini-3.1-flash-lite-preview`, that is
 **Google’s tier capacity**, not a bug in this repo. Mitigations: wait and
-retry, set **`GEMINI_MODEL`** / pass **`--gemini-model`** to a different
-generally available model, or use a project/tier with higher quota.
+retry, set **`HUMEO_LLM_MODEL`** / pass **`--llm-model`** to a different
+generally available model, or use a project/tier with higher quota. The
+`--gemini-model` alias still works for backward compatibility.
 
 ---
 
@@ -46,7 +54,7 @@ generally available model, or use a project/tier with higher quota.
 
 Translated:
 
-- Keep the current staged pipeline (`ingest → clip select → hook → prune → layout vision → render`).
+- Keep the current staged pipeline (`ingest → clip select → hook → prune → multi-frame layout vision → render`).
 - Keep the five fixed 9:16 layouts in `humeo_core.primitives.layouts`.
 - Keep the two-package split (`humeo` product, `humeo-core` engine).
 - **Add one new cheap multimodal artefact** between ingest and clip selection:
@@ -55,7 +63,7 @@ Translated:
 - **Make the clip selector depend on that artefact** so its output actually
   changes when the visuals/charts change, not only when the transcript hash
   changes.
-- **Make the renderer stop letterboxing.** Kill the black bars.
+- **Letterboxing / black-bar removal** is already shipped; any remaining work is verification and doc hygiene, not a fresh renderer redesign.
 
 That's the whole milestone. Everything in this TODO is one of those four
 moves or a supporting test.
@@ -623,7 +631,7 @@ Explicit. So we don't silently scope-creep into HIVE.
 Concrete acceptance criteria for closing this TODO:
 
 1. `uv run pytest` — all green (old + new tests).
-2. `humeo --long-to-shorts "https://www.youtube.com/watch?v=PdVv_vLkUgk"`
+2. `uv run humeo --long-to-shorts "https://www.youtube.com/watch?v=PdVv_vLkUgk"`
    produces `output/short_005.mp4` where Cathie Wood fills the bottom band
    with **no black side-bars**. Visual A/B vs the current render is
    unmistakable.

@@ -38,7 +38,7 @@ The paper’s ideal **narrative_context.json before clip select** is **not** the
 ## 5) Paper Lessons You Should Actually Steal
 
 - **Orchestrate**, don’t train a giant model first.
-- **Strict JSON** at every hop (this repo: `humeo_core.schemas` + Gemini `response_mime_type="application/json"`).
+- **Strict JSON** at every hop (this repo: `humeo_core.schemas` + provider-side `response_schema` validation).
 - **Deterministic** media steps local; **LLM** for decisions only.
 - **Cache** transcripts and intermediates so retries re-run model calls only.
 
@@ -49,7 +49,7 @@ The paper’s ideal **narrative_context.json before clip select** is **not** the
 ## 6) Local vs Cloud (80/20)
 
 - **Local:** download, ffmpeg, ASR, scene/keyframe extraction where used.
-- **Cloud/API:** Gemini clip + hook + prune + layout vision.
+- **Cloud/API:** provider-swappable clip + hook + prune + layout vision (`gemini`, `openai`, `azure`).
 - **Local again:** final ffmpeg compile.
 
 ---

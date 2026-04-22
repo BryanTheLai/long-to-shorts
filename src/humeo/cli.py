@@ -38,9 +38,9 @@ def build_parser() -> argparse.ArgumentParser:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  humeo --long-to-shorts "https://youtube.com/watch?v=abc123"
-  humeo --long-to-shorts "https://youtube.com/watch?v=abc123" --work-dir .humeo_work
-  humeo --long-to-shorts "https://youtube.com/watch?v=abc123" --llm-model gemini-2.0-flash
+  uv run humeo --long-to-shorts "https://youtube.com/watch?v=abc123"
+  uv run humeo --long-to-shorts "https://youtube.com/watch?v=abc123" --work-dir .humeo_work
+  uv run humeo --long-to-shorts "https://youtube.com/watch?v=abc123" --llm-model gemini-2.0-flash
         """,
     )
 

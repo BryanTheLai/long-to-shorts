@@ -1,6 +1,6 @@
 # Product pipeline: stages, caches, and JSON contracts
 
-This document describes **`humeo.pipeline.run_pipeline`**: what runs when, what is cached, what Gemini returns, and how data flows into ffmpeg.
+This document describes **`humeo.pipeline.run_pipeline`**: what runs when, what is cached, what each structured LLM stage returns, and how data flows into ffmpeg.
 
 **Other docs:** index at [`README.md`](README.md) in this folder. Prompt-vs-code gaps (e.g. ranking): [`KNOWN_LIMITATIONS_AND_PROMPT_CONTRACT_GAP.md`](KNOWN_LIMITATIONS_AND_PROMPT_CONTRACT_GAP.md).
 
@@ -11,10 +11,10 @@ Visual map (HIVE-inspired, static HTML): [hive_architecture_visualization.html](
 ```
 YouTube URL
     → Stage 1:    Ingest (download, transcript)
-    → Stage 2:    Clip selection (Gemini JSON → over-generate pool → rank → clips.json)
-    → Stage 2.25: Hook detection (Gemini JSON → hooks.json, overwrites clip.hook_start/end)
-    → Stage 2.5:  Content pruning (Gemini JSON → prune.json, writes clip.trim_start/end)
-    → Stage 3:    Keyframes + layout vision (Gemini vision JSON → LayoutInstruction per clip)
+    → Stage 2:    Clip selection (structured LLM JSON → over-generate pool → rank → clips.json)
+    → Stage 2.25: Hook detection (structured LLM JSON → hooks.json, overwrites clip.hook_start/end)
+    → Stage 2.5:  Content pruning (structured LLM JSON → prune.json, writes clip.trim_start/end)
+    → Stage 3:    Keyframes + layout vision (structured multimodal JSON → LayoutInstruction per clip)
     → Stage 4:    Render (ffmpeg per clip → output/short_<id>.mp4)
 ```
 
@@ -44,56 +44,57 @@ Work directory **`work_dir`** defaults to `<HUMEO_CACHE_ROOT>/videos/<video_id>/
 
 ---
 
-## Stage 2: Clip selection (Gemini, text-only)
+## Stage 2: Clip selection (provider-swappable structured LLM, text-only)
 
-**Goal:** `clips.json` — ranked viral segments with timings and metadata.
+**Goal:** `clips.json` - ranked viral segments with timings and metadata.
 
-**When the LLM runs**
+**Cache / reuse model**
 
-- `clips.json` exists **and**
-- `clips.meta.json` exists **and**
-- `transcript_sha256` in meta matches current transcript **and**
-- `gemini_model` in meta matches **effective** clip model (`config.gemini_model` or `GEMINI_MODEL` from `humeo.config`) **and**
-- `force_clip_selection` is **false**
+Clip selection has two reuse layers:
 
-→ **cache hit:** load `clips.json` only (`humeo.clip_selector.load_clips`). No Gemini call.
+1. **Full cache hit** - if `clips.meta.json` says the transcript fingerprint, provider/model transport, and ranking policy all still match, the pipeline loads `clips.json` and makes no LLM call.
+2. **Re-rank hit** - if the transcript and provider/model still match but the ranking policy changed, the pipeline reuses `clip_selection_raw.json`, re-parses the candidate pool, and re-ranks locally without paying for another model call.
 
-**When the LLM is skipped (legacy)**
-
-- Meta version &lt; 2 with `llm_provider == "openai"` → cache invalid.
+The full cache is bypassed when `force_clip_selection` is true.
 
 **Artifacts**
 
 | File | Contents |
 |------|----------|
-| `clips.meta.json` | `version` (2), `transcript_sha256`, `gemini_model` |
-| `clip_selection_raw.json` | Raw string returned by Gemini (audit) |
-| `clips.json` | Parsed list of `Clip` models (written by `save_clips`) |
+| `clips.meta.json` | `version` (4), `transcript_sha256`, `llm`, `ranking_policy_sha256`, `ranking_policy` |
+| `clip_selection_raw.json` | Verbatim raw candidate-pool JSON returned by the LLM |
+| `clips.json` | Parsed and ranked list of shared `Clip` models |
 
-**Gemini call** (`humeo.clip_selector.select_clips`)
+**Structured LLM call** (`humeo.clip_selector.select_clips`)
 
-- SDK: `google.genai` — `Client.models.generate_content`.
+- Provider/model resolution flows through `humeo.llm_provider`.
 - **System:** Jinja template `clip_selection_system.jinja2` (package: `src/humeo/prompts/`).
 - **User:** transcript lines built from `transcript["segments"]` as `[start-end] text` (`build_prompt`).
-- **Config:** `GenerateContentConfig(system_instruction=..., temperature=0.3, response_mime_type="application/json")`.
+- **Schema:** `response_schema=ClipSelectionResponse`.
+- **Temperature:** `0.7` by default so the model returns a wider candidate pool instead of the same obvious five windows every run.
 - Retries: `LLM_MAX_ATTEMPTS = 3`, `LLM_RETRY_DELAY_SEC = 2.0` with backoff.
 
 **Expected JSON shape (clip selection)**
 
-Top-level object with `"clips": [ ... ]` (or a bare array — parser accepts both). Each item validates as `humeo_core.schemas.Clip`. See `clip_selection_system.jinja2` for the canonical schema (fields include `clip_id`, `start_time_sec`, `end_time_sec`, `virality_score`, `transcript`, `layout_hint`, trim/hook fields, etc.).
+Top-level object with `"clips": [ ... ]` (or a bare array - parser accepts both). Each item first validates as `_ClipSelectionCandidate`, then is converted into the shared `humeo_core.schemas.Clip`.
+
+Important fields beyond the old v1 contract:
+
+- `selection_reason`
+- `rule_scores` with the five downstream-consumed rule ids
+- `layout_hint`
+- `hook_*` and `trim_*` placeholders for later stages
 
 **Constants (from `humeo.config`)**
 
 - `MIN_CLIP_DURATION_SEC` = **50**
 - `MAX_CLIP_DURATION_SEC` = **90**
 - `TARGET_CLIP_COUNT` = **5** (used as the ranker's default `min_kept`)
-- Default `GEMINI_MODEL` = **`gemini-3.1-flash-lite-preview`** (if env unset)
+- Default Gemini fallback model = **`gemini-3.1-flash-lite-preview`** if the provider is Gemini and no explicit model is supplied
 
 **Over-generate + rank (default policy)**
 
-Rather than asking Gemini for exactly 5 clips every run, the selector now
-asks for a candidate **pool** at a higher sampling temperature and keeps
-the best ones with a threshold + floor + cap:
+Rather than asking the model for exactly 5 clips every run, the selector asks for a candidate **pool** and keeps the best ones with a threshold + floor + cap:
 
 | Setting | Default | `PipelineConfig` field |
 |---------|---------|------------------------|
@@ -116,17 +117,13 @@ Policy (implemented in `humeo.clip_selector.rank_and_filter_clips`):
 5. Renumber `clip_id` to `001..NNN` in rank order so downstream artifacts
    (keyframes, subtitles, filenames) stay dense and ordered.
 
-**Rank signal:** only `virality_score` (and `needs_review`) feed the ranker.
-The clip-selection prompt may ask for `reasoning` / `score_breakdown`; those
-keys are **not** on the `Clip` schema and are **dropped** when parsing — see
-[`docs/KNOWN_LIMITATIONS_AND_PROMPT_CONTRACT_GAP.md`](KNOWN_LIMITATIONS_AND_PROMPT_CONTRACT_GAP.md) §1.
+**Rank signal:** the ranker still sorts on `virality_score`, but `virality_score` is now derived from the weighted composite of `rule_scores` when those structured rule outcomes are present. `needs_review=True` still pushes a candidate behind same-score non-reviewed clips.
 
-The raw LLM response is cached verbatim (`clip_selection_raw.json`), so you
-can re-rank a cached pool without another LLM call by editing the thresholds.
+The raw LLM response is cached verbatim (`clip_selection_raw.json`), so you can re-rank a cached pool without another LLM call by editing the ranking thresholds or weights.
 
 ---
 
-## Stage 2.25: Hook detection (Gemini, text-only)
+## Stage 2.25: Hook detection (provider-swappable structured LLM, text-only)
 
 **Goal:** Overwrite each clip's `hook_start_sec` / `hook_end_sec` with a
 real, localised hook sentence window. The clip-selection LLM almost always
@@ -137,7 +134,7 @@ hook_start of 0.0.
 **How it's wired in** — `humeo.hook_detector.run_hook_detection_stage`:
 
 - Runs **after** clip selection and **before** content pruning.
-- Single batched Gemini call: takes every clip's clip-relative segments
+- Single batched structured LLM call: takes every clip's clip-relative segments
   plus the selector's guessed hook text, returns one hook window per clip.
 - Validates each window against:
   - `0 ≤ hook_start < hook_end ≤ clip.duration_sec` (±0.5s rounding grace).
@@ -153,15 +150,15 @@ hook_start of 0.0.
 - `hooks.meta.json` + `hooks.json` exist **and**
 - `transcript_sha256` matches **and**
 - `clips_sha256` matches (hash of clip **windows**, hook-independent) **and**
-- `gemini_model` matches **and**
+- `llm` identity matches **and**
 - `force_hook_detection` is false
 
 **Artifacts**
 
 | File | Contents |
 |------|----------|
-| `hooks.meta.json` | `version` (1), `transcript_sha256`, `clips_sha256`, `gemini_model` |
-| `hooks_raw.json` | Raw string returned by Gemini (audit) |
+| `hooks.meta.json` | `version` (2), `transcript_sha256`, `clips_sha256`, `llm` |
+| `hooks_raw.json` | Raw string returned by the stage LLM (audit) |
 | `hooks.json` | `{ "hooks": [{clip_id, hook_start_sec, hook_end_sec, hook_text, reason}, ...] }` |
 
 **Kill switch**
@@ -173,7 +170,7 @@ hook_start of 0.0.
 
 ---
 
-## Stage 2.5: Content pruning (Gemini, text-only)
+## Stage 2.5: Content pruning (provider-swappable structured LLM, text-only)
 
 **Goal:** Tighten each selected clip by trimming weak lead-in / trailing
 content. This is HIVE's "irrelevant content pruning" sub-task applied at the
@@ -232,7 +229,7 @@ content. This is HIVE's "irrelevant content pruning" sub-task applied at the
 - `prune.meta.json` + `prune.json` exist **and**
 - `transcript_sha256` matches **and**
 - `clips_sha256` matches (hash of clip windows, trim-independent) **and**
-- `gemini_model` matches **and**
+- `llm` identity matches **and**
 - `prune_level` matches **and**
 - `force_content_pruning` is false
 
@@ -240,18 +237,18 @@ content. This is HIVE's "irrelevant content pruning" sub-task applied at the
 
 | File | Contents |
 |------|----------|
-| `prune.meta.json` | `version` (1), `transcript_sha256`, `clips_sha256`, `gemini_model`, `prune_level` |
-| `prune_raw.json` | Raw string returned by Gemini (audit) |
+| `prune.meta.json` | `version` (3), `transcript_sha256`, `clips_sha256`, `llm`, `prune_level` |
+| `prune_raw.json` | Raw string returned by the stage LLM (audit) |
 | `prune.json` | `{"clips": [{clip_id, trim_start_sec, trim_end_sec}, ...]}` |
 
-**Gemini call** (`humeo.content_pruning.request_prune_decisions`)
+**Structured LLM call** (`humeo.content_pruning.request_prune_decisions`)
 
 - Single batched call for all 5 clips.
 - System prompt: `src/humeo/prompts/content_pruning_system.jinja2`.
 - User message: per-clip block with `clip_id`, `duration_sec`, `topic`,
   optional `hook_window_sec`, and clip-relative segment lines
   (`[REL_START - REL_END] text`).
-- `GenerateContentConfig(system_instruction=..., temperature=0.2, response_mime_type="application/json")`.
+- `response_schema` validates the pruning response at the provider boundary.
 - Retries: same as clip selection (3 attempts, exponential backoff).
 
 **Expected JSON shape**
@@ -273,70 +270,113 @@ Bare-array form (`[{...}, {...}]`) is also accepted.
 
 ---
 
-## Stage 3: Keyframes + layout vision (Gemini, multimodal)
+## Stage 3: Keyframes + layout vision (provider-swappable structured multimodal LLM)
 
-**Goal:** One keyframe per clip and a **`LayoutInstruction`** per `clip_id` (layout kind + optional normalized bboxes for split).
+**Goal:** Multiple sampled frames per clip under `work_dir/keyframes/`, then one merged **`LayoutInstruction`** per `clip_id` for render.
 
-### 3a — Keyframes
+### 3a - Frame sampling
 
-- Build `Scene` list: `scene_id = clip.clip_id`, `start_time` / `end_time` from `clip_for_render(clip)` window (`humeo.render_window`).
-- `humeo_core.primitives.ingest.extract_keyframes(source_video, scenes, keyframes_dir)` writes images under **`work_dir/keyframes/`** and sets `Scene.keyframe_path`.
+`humeo.layout_vision._sample_clip_frames` samples directly from the render window:
 
-### 3b — Layout vision (Gemini)
+- Start from `clip_for_render(clip)` and `source_keep_ranges(...)`.
+- Take **uniform coverage** timestamps across the kept ranges.
+- Add **frame-diff peak** timestamps so obvious visual changes have a chance to influence the decision.
+- Cap the total at **6 sampled frames per clip**.
+- Write JPEGs under **`work_dir/keyframes/<clip_id>/`** and keep per-frame metadata (`frame_id`, `timestamp_sec`, `path`, `width`, `height`).
+
+This stage imports `cv2`, which is why `opencv-python` is part of the default app dependency set.
+
+### 3b - Layout vision
 
 **When vision is skipped (cache hit)**
 
 - `layout_vision.meta.json` + `layout_vision.json` exist **and**
 - `transcript_sha256` matches **and**
-- `clips_sha256` matches **SHA256 of entire `clips.json` file** **and**
-- `gemini_vision_model` matches **resolved** vision model **and**
+- `clip_windows_sha256` matches **and**
+- `llm` identity matches the resolved provider/model transport **and**
+- `layout_policy_version` matches **and**
 - `force_layout_vision` is **false**
 
-→ reload `LayoutInstruction` objects from cache (`humeo.layout_vision.run_layout_vision_stage`).
+-> reload `LayoutInstruction` objects from cache (`humeo.layout_vision.run_layout_vision_stage`).
 
-**Resolved vision model** (`resolved_vision_model`)
+**Resolved vision model**
 
-1. `config.gemini_vision_model` if set  
-2. else `GEMINI_VISION_MODEL` env (from `humeo.config`)  
-3. else same as clip selection: `config.gemini_model` or `GEMINI_MODEL`
+`resolved_vision_model(config)` prefers, in order:
 
-**Gemini call per keyframe** (`_call_gemini_vision`)
+1. `config.llm_vision_model`
+2. legacy `config.gemini_vision_model`
+3. `HUMEO_LLM_VISION_MODEL`
+4. `GEMINI_VISION_MODEL`
+5. the resolved text-stage model
 
-- `contents`: `[Part.from_text(GEMINI_LAYOUT_VISION_PROMPT), Part.from_bytes(image)]`
-- `GenerateContentConfig(temperature=0.2, response_mime_type="application/json")`
-- Parse `response.text` as JSON.
+**Structured multimodal call** (`_call_gemini_vision`)
 
-**Gemini JSON schema (layout vision)** — exact contract in `GEMINI_LAYOUT_VISION_PROMPT` in `humeo.layout_vision`:
+- Provider/model resolution still flows through `humeo.llm_provider`.
+- The request sends every sampled frame as a labeled image (`FRAME {idx}: timestamp_sec=...`).
+- `response_schema=_GeminiMultiFrameResponse`.
+- Raw model output is kept alongside the parsed result for audit.
+
+**Model JSON shape (layout vision)**
+
+The exact contract lives in `GEMINI_LAYOUT_VISION_PROMPT` in `humeo.layout_vision`. It is now a **multi-frame** response:
 
 ```json
 {
-  "layout": "sit_center" | "zoom_call_center" | "split_chart_person",
-  "person_bbox": { "x1": 0.0, "y1": 0.0, "x2": 1.0, "y2": 1.0 } | null,
-  "chart_bbox": { "x1": 0.0, "y1": 0.0, "x2": 1.0, "y2": 1.0 } | null,
-  "reason": "short rationale"
+  "frames": [
+    {
+      "frame_index": 0,
+      "timestamp_sec": 12.34,
+      "layout": "zoom_call_center" | "sit_center" | "split_chart_person" | "split_two_persons" | "split_two_charts",
+      "person_bbox": {"x1": 0, "y1": 0, "x2": 1000, "y2": 1000} | null,
+      "face_bbox": {"x1": 0, "y1": 0, "x2": 1000, "y2": 1000} | null,
+      "chart_bbox": {"x1": 0, "y1": 0, "x2": 1000, "y2": 1000} | null,
+      "second_person_bbox": {"x1": 0, "y1": 0, "x2": 1000, "y2": 1000} | null,
+      "second_face_bbox": {"x1": 0, "y1": 0, "x2": 1000, "y2": 1000} | null,
+      "second_chart_bbox": {"x1": 0, "y1": 0, "x2": 1000, "y2": 1000} | null,
+      "reason": "short rationale"
+    }
+  ],
+  "merged": {
+    "layout": "zoom_call_center" | "sit_center" | "split_chart_person" | "split_two_persons" | "split_two_charts",
+    "person_bbox": {"x1": 0, "y1": 0, "x2": 1000, "y2": 1000} | null,
+    "face_bbox": {"x1": 0, "y1": 0, "x2": 1000, "y2": 1000} | null,
+    "chart_bbox": {"x1": 0, "y1": 0, "x2": 1000, "y2": 1000} | null,
+    "second_person_bbox": {"x1": 0, "y1": 0, "x2": 1000, "y2": 1000} | null,
+    "second_face_bbox": {"x1": 0, "y1": 0, "x2": 1000, "y2": 1000} | null,
+    "second_chart_bbox": {"x1": 0, "y1": 0, "x2": 1000, "y2": 1000} | null,
+    "reason": "one merged rationale"
+  }
 }
 ```
 
 **Mapping to `LayoutInstruction`** (`_instruction_from_gemini_json`)
 
-- `layout` → `LayoutKind` (invalid string → `sit_center`).
-- Bboxes parsed with `BoundingBox.model_validate` (Pydantic).
-- `layout_instruction_from_regions` sets `person_x_norm` / `chart_x_norm` from bbox centers/edges (`humeo_core.primitives.vision`).
-- If `layout == split_chart_person` **and** both `person_bbox` and `chart_bbox` are non-null, **`split_chart_region`** = chart box and **`split_person_region`** = person box (normalized rects for ffmpeg split planner).
+- `layout` -> `LayoutKind` (invalid strings downgrade to `sit_center` with a warning).
+- Bboxes accept:
+  - the preferred **0..1000** model-facing coordinate scale
+  - legacy normalized **[0,1]**
+  - accidental pixel coords if the sampled frame size is known
+- Parsed boxes are normalized back to the internal shared `BoundingBox` schema.
+- For split layouts, the parser populates render-safe bbox fields such as:
+  - `split_chart_region` / `split_person_region`
+  - `split_second_person_region`
+  - `split_second_chart_region`
+- `face_bbox` is used to derive a tighter person crop for split-person layouts so the speaker's head is not cut off by a torso-heavy box.
 
-**Failures**
+**Failures and fallbacks**
 
-- Missing keyframe → `sit_center`, raw records `error`.
-- API/parse failure → `sit_center`, raw records `error` message.
+- If **no sampled frames** are produced, Stage 3 now falls back to `clip.layout_hint` (or the clip's current `layout`) instead of blindly collapsing to `sit_center`.
+- If the multimodal call fails after some frame instructions were produced, the stage chooses the dominant frame-level layout or falls back to `layout_hint`.
+- Parser warnings and raw errors are written into the cache artifact so failures are visible after the run.
 
 **Artifacts**
 
 | File | Contents |
 |------|----------|
-| `layout_vision.meta.json` | `transcript_sha256`, `clips_sha256`, `gemini_vision_model` |
-| `layout_vision.json` | `{ "clips": { "<clip_id>": { "instruction": <LayoutInstruction JSON>, "raw": <Gemini JSON or error> } } }` |
+| `layout_vision.meta.json` | `version`, `transcript_sha256`, `clip_windows_sha256`, `llm`, `layout_policy_version` |
+| `layout_vision.json` | `{ "clips": { "<clip_id>": { "instruction": ..., "sampled_frames": [...], "frame_results": [...], "raw": ..., "warnings": [...] } } }` |
 
-**Note:** `humeo_core.primitives.vision.classify_from_regions` (bbox heuristics) exists for **MCP / other callers**. The **product pipeline** uses the vision model’s **`layout` field** plus bboxes as above, not pixel heuristics for layout choice.
+**Note:** `humeo_core.primitives.vision.classify_from_regions` still exists for MCP / other callers. The product pipeline now trusts the structured multimodal response plus the bbox adapter and merge logic above.
 
 ---
 
@@ -402,8 +442,8 @@ baked-in title on the chart/slide.
 | Change | Clip selection | Hook detection | Content pruning | Layout vision |
 |--------|---------------|---------------|-----------------|---------------|
 | Edit `transcript.json` (content) | Miss (hash) | Miss (hash) | Miss (hash) | Miss (hash) |
-| Change `clips.json` windows | N/A | Miss (`clips_sha256`) | Miss (`clips_sha256`) | Miss (`clips_sha256`) |
-| Change `--gemini-model` | Miss | Miss | Miss | May still hit vision if vision model unchanged |
+| Change clip windows / trims / keep ranges | N/A | Miss (`clips_sha256`) | Miss (`clips_sha256`) | Miss (`clip_windows_sha256`) |
+| Change `--llm-model` | Miss | Miss | Miss | May still hit vision if the resolved vision model is unchanged |
 | Change `--prune-level` | No effect | No effect | Miss | No effect |
 | Change vision model (env/flag) | No effect | No effect | No effect | Miss |
 | `--force-clip-selection` | Always run LLM | — | — | — |
@@ -421,8 +461,9 @@ windows, so you can re-run hook detection without also re-running pruning.
 
 | Flag | Maps to |
 |------|---------|
-| `--gemini-model` | `PipelineConfig.gemini_model` |
-| `--gemini-vision-model` | `PipelineConfig.gemini_vision_model` |
+| `--llm-provider` | `PipelineConfig.llm_provider` |
+| `--llm-model` | `PipelineConfig.llm_model` (`--gemini-model` is a legacy alias) |
+| `--llm-vision-model` | `PipelineConfig.llm_vision_model` (`--gemini-vision-model` is a legacy alias) |
 | `--force-clip-selection` | `force_clip_selection` |
 | `--force-layout-vision` | `force_layout_vision` |
 | `--no-hook-detection` | `detect_hooks = False` (Stage 2.25 skipped) |
@@ -430,5 +471,7 @@ windows, so you can re-run hook detection without also re-running pruning.
 | `--prune-level` | `prune_level` (Stage 2.5 aggressiveness) |
 | `--force-content-pruning` | `force_content_pruning` |
 | `--work-dir`, `--cache-root`, `--no-video-cache` | work dir / cache |
+| `--start-at`, `--stop-after` | Pipeline stage resume / stop controls |
+| `--inspect-stage`, `--clip-id` | Stable stage-inspection output |
 
 See `humeo.cli` for the full parser.

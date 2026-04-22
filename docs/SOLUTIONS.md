@@ -79,13 +79,13 @@ Bryan's exact idea, then the implementation.
 Translated into a clean primitive:
 
 1. **"Huge screen changes" = scene detection.** PySceneDetect already runs at ingest time and emits one keyframe per scene. That is the "v3 image" set, for free, with no pixel code in Python.
-2. **"Send each to LLM with OCR"** = one vision-LLM call per keyframe, with a prompt that *forces* JSON output containing bounding boxes **and** OCR text.
+2. **"Send each to LLM with OCR"** = one structured multimodal call over the sampled image set, with a prompt/schema that *forces* JSON output containing bounding boxes **and** OCR-like region reasoning.
 3. **"Get the bbox for them"** = structured output:
-   - `person_bbox` (normalized `x1, y1, x2, y2`)
-   - `chart_bbox` (normalized `x1, y1, x2, y2`)
+   - model-facing `person_bbox` / `chart_bbox` in the 0..1000 contract
+   - internal normalized `[0,1]` boxes after parse
    - `ocr_text`
    - `reason`
-4. **Drive the layout:** `person_x_norm` comes from `person_bbox.center_x`. `chart_x_norm` comes from `chart_bbox.x1`. `LayoutKind` is derived from which bboxes are present and how wide they are.
+4. **Drive the layout:** `person_x_norm` comes from `person_bbox.center_x`. `chart_x_norm` comes from `chart_bbox.x1`. `LayoutKind` is derived from which bboxes are present and how wide they are. The product wrapper now applies the same idea to multi-frame clip sampling in `src/humeo/layout_vision.py`.
 
 This is now implemented in three files:
 
@@ -206,8 +206,8 @@ Prompt-vs-code gaps (e.g. `score_breakdown` not ranked, unused `shorts_title` / 
 |-----------------------------------------------------------------|--------|--------|
 | ~~`Content Pruning` sub-task (HIVE §3.2.3) not yet implemented.~~ **Shipped** (`content_pruning.py`, Stage 2.5). | — | — |
 | Memory module (HIVE §3.1.6) for multi-episode state.            | ~2 day | Required if we extend to full drama series.                               |
-| Vision-LLM provider wiring (Gemini/OpenAI client).              | ~2 hr  | Vision primitive is pluggable but currently needs caller to supply `vision_fn`. |
-| End-to-end integration test on the target Cathie Wood video.    | ~1 hr  | Confidence. See `TARGET_VIDEO_ANALYSIS.md` for why that video is the canonical test case. |
+| ~~Vision-LLM provider wiring (Gemini/OpenAI client).~~ **Shipped** via `src/humeo/llm_provider.py`. | — | Product stages 2 / 2.25 / 2.5 / 3 now share the same provider-swappable transport (`gemini`, `openai`, `azure`). |
+| End-to-end integration test on the target Cathie Wood video.    | ~1 hr  | Manual regression run exists; an automated committed test is still missing. See `TARGET_VIDEO_ANALYSIS.md` for why that video is the canonical test case. |
 | Pruning + Memory are what close the remaining HIVE gap to human.| —      | See `docs/hive-paper/PAPER_BREAKDOWN.md` §8.                                              |
 
 ---
@@ -218,7 +218,7 @@ Anyone editing this repo in the future: don't violate these.
 
 1. **Every LLM call must return JSON that validates against a Pydantic model.** No free-form text in the pipeline.
 2. **Every primitive is one file, one job.** No god-modules.
-3. **All bbox coordinates are normalized [0, 1].** Never pixels.
+3. **Internal/runtime bbox coordinates are normalized [0, 1].** Stage 3 may accept model-facing 0..1000 boxes, but nothing downstream of the parser should depend on pixels.
 4. **Detectors are swappable; renderer is fixed.** If you add a fourth detector, it must emit `SceneRegions`.
 5. **Keep the product wrapper thin.** New reusable media logic belongs in `humeo-core`, not in `src/humeo`.
 6. **Cache aggressively.** Work dir layout and env vars: **`docs/ENVIRONMENT.md`**. Retries should re-run model calls only, not deterministic extraction.

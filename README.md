@@ -1,27 +1,29 @@
 # Humeo
 
-Long podcast or interview → vertical 9:16 shorts. Pipeline: download, transcribe, Gemini (clip selection, hook detection, content pruning, layout vision), ffmpeg render.
+Long podcast or interview -> vertical 9:16 shorts. Pipeline: download, transcribe, structured LLM stages (clip selection, hook detection, content pruning, layout vision), then ffmpeg render.
 
-**Architecture (static HTML, GitHub Pages):**  
+The product wrapper supports `gemini`, `openai`, and `azure` for stages 2 / 2.25 / 2.5 / 3 through the same CLI surface.
+
+**Architecture (static HTML, GitHub Pages):**
 [https://bryanthelai.github.io/long-to-shorts/hive_architecture_visualization.html](https://bryanthelai.github.io/long-to-shorts/hive_architecture_visualization.html)
 
 ## Repo layout
 
 | Path | Role |
 |------|------|
-| `src/humeo/` | CLI, pipeline, ingest, Gemini prompts, render adapters |
+| `src/humeo/` | CLI, pipeline, ingest, provider-agnostic prompts, render adapters |
 | `humeo-core/` | Schemas, ffmpeg compile, primitives, optional MCP server |
 
 ## Pipeline (actual order)
 
 ```text
 YouTube URL
-  → ingest (source.mp4, transcript.json)
-  → clip selection (Gemini → clips.json)
-  → hook detection (Gemini → hooks.json)
-  → content pruning (Gemini → prune.json)
-  → keyframes + layout vision (Gemini vision → layout_vision.json)
-  → ASS subtitles + humeo-core ffmpeg render → short_<id>.mp4
+  -> ingest (source.mp4, transcript.json)
+  -> clip selection (structured LLM -> clips.json)
+  -> hook detection (structured LLM -> hooks.json)
+  -> content pruning (structured LLM -> prune.json)
+  -> multi-frame layout vision (structured multimodal LLM -> layout_vision.json)
+  -> ASS subtitles + humeo-core ffmpeg render -> short_<id>.mp4
 ```
 
 Details: **`docs/PIPELINE.md`**.
@@ -32,14 +34,16 @@ A short shows at most two on-screen items (`person` or `chart`). That yields fiv
 
 ## Requirements
 
-- **Python** ≥ 3.10  
-- **`uv`** — install: [astral.sh/uv](https://docs.astral.sh/uv/)  
-- **`ffmpeg`** — on `PATH` for extract/render  
-- **API keys** — see **`docs/ENVIRONMENT.md`**  
-  - `GOOGLE_API_KEY` or `GEMINI_API_KEY` — required for Gemini stages  
-  - `OPENAI_API_KEY` — if using OpenAI Whisper API (`HUMEO_TRANSCRIBE_PROVIDER=openai`)
+- **Python** >= 3.10
+- **`uv`** - install: [astral.sh/uv](https://docs.astral.sh/uv/)
+- **`ffmpeg`** - on `PATH` for extract/render
+- **API keys / provider env** - see **`docs/ENVIRONMENT.md`**
+  - `GOOGLE_API_KEY` or `GEMINI_API_KEY` for Gemini runs
+  - `OPENAI_API_KEY` for OpenAI text stages or Whisper API transcription
+  - `AZURE_OPENAI_API_KEY` plus Azure endpoint/base-url settings for Azure runs
+- **OpenCV** - `opencv-python` is part of the default app install because Stage 3 frame sampling imports `cv2`
 
-Copy **`.env.example`** → **`.env`** (never commit `.env`).
+Copy **`.env.example`** -> **`.env`** (never commit `.env`).
 
 ## Install
 
@@ -57,42 +61,52 @@ uv sync --extra whisper
 ## Run
 
 ```bash
-humeo --long-to-shorts "https://www.youtube.com/watch?v=VIDEO_ID"
+uv run humeo --long-to-shorts "https://www.youtube.com/watch?v=VIDEO_ID"
 ```
 
 Use **`--work-dir`** or **`--no-video-cache`** to control where `source.mp4` and intermediates live (see **`docs/ENVIRONMENT.md`**).
 
-## CLI guide (all flags)
+## CLI guide
 
-Use `humeo --help` for the live source of truth. This table matches `src/humeo/cli.py`.
+Use `uv run humeo --help` for the live source of truth. Common flags:
 
 ### Required
 
 | Flag | Meaning |
 |------|---------|
-| `--long-to-shorts URL` | YouTube URL to process (required). |
+| `--long-to-shorts URL` | YouTube URL to process. Required unless you are inspecting an existing `--work-dir`. |
 
 ### Paths and cache behavior
 
 | Flag | Meaning |
 |------|---------|
-| `--output`, `-o` | Output directory for final `short_*.mp4` (default: `./output`). |
+| `--output`, `-o` | Output directory for final `short_*.mp4` files (default: `./output`). |
 | `--work-dir PATH` | Directory for intermediate artifacts (`source.mp4`, `transcript.json`, caches). |
-| `--no-video-cache` | Disable per-video cache dirs; uses `./.humeo_work` unless `--work-dir` is set. |
+| `--no-video-cache` | Disable per-video cache dirs; use `./.humeo_work` unless `--work-dir` is set. |
 | `--cache-root PATH` | Override cache root (env equivalent: `HUMEO_CACHE_ROOT`). |
-| `--clean-run` | Fresh run: disables video cache, forces all model stages, overwrites outputs, and auto-creates a timestamped work dir if `--work-dir` is not provided. |
+| `--clean-run` | Fresh run: disables per-video cache reuse, forces all LLM stages, and auto-creates a timestamped work dir if `--work-dir` is not provided. |
 
-### Model selection and stage forcing
+### LLM provider and model selection
 
 | Flag | Meaning |
 |------|---------|
-| `--gemini-model MODEL_ID` | Gemini model for clip selection / text stages (default from env/config). |
-| `--gemini-vision-model MODEL_ID` | Gemini model for keyframe layout vision (defaults to `GEMINI_VISION_MODEL` or clip model). |
-| `--force-clip-selection` | Re-run clip selection even if `clips.meta.json` cache matches. |
-| `--force-hook-detection` | Re-run Stage 2.25 hook detection even if `hooks.meta.json` cache matches. |
-| `--force-content-pruning` | Re-run Stage 2.5 pruning even if `prune.meta.json` cache matches. |
-| `--force-layout-vision` | Re-run layout vision even if `layout_vision.meta.json` cache matches. |
-| `--no-hook-detection` | Skip Stage 2.25 hook detection (pruning still runs with fallback behavior). |
+| `--llm-provider {gemini,openai,azure}` | Provider for stages 2 / 2.25 / 2.5 / 3. |
+| `--llm-model MODEL_ID` | Text-stage model or deployment id. Legacy alias: `--gemini-model`. |
+| `--llm-vision-model MODEL_ID` | Optional separate vision model or deployment id for Stage 3. Legacy alias: `--gemini-vision-model`. |
+| `--force-clip-selection` | Re-run Stage 2 even if `clips.meta.json` matches. |
+| `--force-hook-detection` | Re-run Stage 2.25 even if `hooks.meta.json` matches. |
+| `--force-content-pruning` | Re-run Stage 2.5 even if `prune.meta.json` matches. |
+| `--force-layout-vision` | Re-run Stage 3 even if `layout_vision.meta.json` matches. |
+| `--no-hook-detection` | Skip Stage 2.25 and leave any hook window already on the clips. |
+
+### Stage control and inspection
+
+| Flag | Meaning |
+|------|---------|
+| `--start-at STAGE` | Resume from `ingest`, `clip-selection`, `hook-detection`, `content-pruning`, `layout-vision`, or `render`. |
+| `--stop-after STAGE` | Stop after a named stage instead of rendering through the end. |
+| `--inspect-stage STAGE` | Write a stable inspection JSON payload for a named stage. |
+| `--clip-id ID` | Optional clip id filter for `--inspect-stage` (for example `003`). |
 
 ### Pruning and subtitles
 
@@ -113,21 +127,20 @@ Use `humeo --help` for the live source of truth. This table matches `src/humeo/c
 ### Common command recipes
 
 ```bash
-# Basic run
-humeo --long-to-shorts "https://www.youtube.com/watch?v=VIDEO_ID"
+# Basic run from the repo venv
+uv run humeo --long-to-shorts "https://www.youtube.com/watch?v=VIDEO_ID"
 
 # Full fresh run for debugging / prompt tuning
-humeo --long-to-shorts "https://www.youtube.com/watch?v=VIDEO_ID" --clean-run --verbose
+uv run humeo --long-to-shorts "https://www.youtube.com/watch?v=VIDEO_ID" --clean-run --verbose
 
-# Re-run only clip selection after prompt edits
-humeo --long-to-shorts "https://www.youtube.com/watch?v=VIDEO_ID" --force-clip-selection
+# Azure run with explicit stage models
+uv run humeo --long-to-shorts "https://www.youtube.com/watch?v=VIDEO_ID" --llm-provider azure --llm-model gpt-5.4 --llm-vision-model gpt-5.4
+
+# Re-run only Stage 3 on an existing cached work dir
+uv run humeo --work-dir .humeo_work --start-at layout-vision --force-layout-vision
 
 # Keep intermediates in a fixed local folder
-humeo --long-to-shorts "https://www.youtube.com/watch?v=VIDEO_ID" --work-dir .humeo_work
-
-# Compare different prune levels on same source
-humeo --long-to-shorts "https://www.youtube.com/watch?v=VIDEO_ID" --prune-level conservative
-humeo --long-to-shorts "https://www.youtube.com/watch?v=VIDEO_ID" --prune-level aggressive
+uv run humeo --long-to-shorts "https://www.youtube.com/watch?v=VIDEO_ID" --work-dir .humeo_work
 ```
 
 ## Documentation
@@ -135,17 +148,14 @@ humeo --long-to-shorts "https://www.youtube.com/watch?v=VIDEO_ID" --prune-level 
 | Doc | Purpose |
 |-----|---------|
 | **`docs/README.md`** | Index of all files under `docs/` |
-| **`docs/STUDY_ORDER.md`** | Read order for onboarding |
 | **`docs/PIPELINE.md`** | Stages, caches, JSON contracts |
 | **`docs/ENVIRONMENT.md`** | Keys, env vars, cache layout |
+| **`docs/PROJECT_ISSUES.md`** | Current runtime gaps, backlog, and doc drift |
 | **`docs/SHARING.md`** | How to share logs/docs/video without bloating git |
-| **`docs/TARGET_VIDEO_ANALYSIS.md`** | Reference input analysis example |
-| **`docs/full_run_output.txt`** | Example full run log (text) |
-| **`docs/hive-paper/PAPER_BREAKDOWN.md`** | HIVE paper, file mapping §9 |
-| **`docs/hive-paper/hive_paper_blunt_guide.md`** | Short HIVE recap |
-| **`docs/TODO.md`** | Backlog |
-| **`docs/KNOWN_LIMITATIONS_AND_PROMPT_CONTRACT_GAP.md`** | Prompt vs code (ranking, hooks, unused fields, scene detect) |
-| **`docs/SOLUTIONS.md`** | Design rationale |
+| **`docs/TARGET_VIDEO_ANALYSIS.md`** | Canonical long-form test video rationale |
+| **`docs/SOLUTIONS.md`** | Design rationale and invariants |
+| **`docs/TODO.md`** | Historical design doc plus current status snapshot |
+| **`docs/KNOWN_LIMITATIONS_AND_PROMPT_CONTRACT_GAP.md`** | Prompt vs code mismatches and current fix map |
 | **`TERMINOLOGY.md`** | Glossary |
 
 ## Tests

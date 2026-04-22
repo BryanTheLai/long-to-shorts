@@ -44,7 +44,7 @@ Skim in this order (do not deep-read every line unless you have time):
 - **`docs/KNOWN_LIMITATIONS_AND_PROMPT_CONTRACT_GAP.md`** — Where prompts diverge from code (e.g. `score_breakdown` not ranked; hook vs export window; unused `clips.json` fields).
 - **`docs/SHARING.md`** — Raw GitHub links, Pages, why MP4s are not in the repo.
 - **`docs/podcast-to-shorts.md`**, **`docs/humeo.md`** — Product wording (short; defers to `PIPELINE.md`).
-- **`docs/TODO.md`** — Backlog and north-star milestones (e.g. `narrative_context.json`, layout fixes).
+- **`docs/TODO.md`** — Historical design doc plus still-open north-star milestones (for example `narrative_context.json` and layout timelines).
 - **`docs/bryans_ideas.md`** — Brainstorm context; shipped bbox idea is spelled in `SOLUTIONS.md` §4.
 
 ## Same-day verification (15 minutes)

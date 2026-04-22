@@ -11,7 +11,7 @@ Read **`PIPELINE.md`** first for what the code actually runs. Everything else is
 | **[KNOWN_LIMITATIONS_AND_PROMPT_CONTRACT_GAP.md](KNOWN_LIMITATIONS_AND_PROMPT_CONTRACT_GAP.md)** | Prompt vs code (ranking, hooks, unused `Clip` fields, scene detect vs keyframes). |
 | **[STUDY_ORDER.md](STUDY_ORDER.md)** | Suggested reading order for onboarding. |
 | **[SOLUTIONS.md](SOLUTIONS.md)** | Design decisions, chronology, invariants. |
-| **[TODO.md](TODO.md)** | North-star backlog (narrative context, layout fixes, cache bumps). |
+| **[TODO.md](TODO.md)** | Historical design doc plus current status snapshot (narrative context, layout timeline, cache ideas). |
 | **[SHARING.md](SHARING.md)** | GitHub Pages, raw URLs, why MP4s stay out of git. |
 | **[TARGET_VIDEO_ANALYSIS.md](TARGET_VIDEO_ANALYSIS.md)** | Canonical long-form test video rationale. |
 | **[mcp_architecture.md](mcp_architecture.md)** | Pointer to `humeo-core/docs/` for MCP. |

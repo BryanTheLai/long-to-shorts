@@ -1,11 +1,11 @@
 # Project Issues Overview
 
-This is the consolidated issue inventory for this repo as of **2026-04-20**.
+This is the consolidated issue inventory for this repo as of **2026-04-22**.
 It separates:
 
 - **Confirmed runtime gaps**: current code does not do the desired thing.
 - **Open backlog**: desired capabilities that are documented but not built.
-- **Doc drift**: docs disagree with current code or with each other.
+- **Doc boundaries**: where the repo intentionally mixes runtime truth, design history, and roadmap.
 
 Read this after [`PIPELINE.md`](PIPELINE.md) if you want the blunt picture.
 
@@ -15,17 +15,19 @@ Read this after [`PIPELINE.md`](PIPELINE.md) if you want the blunt picture.
 
 The biggest current product gaps are:
 
-1. **Clip selection is still transcript-only.** Visual context does not influence which clips get selected.
-2. **Layout vision still sees one midpoint keyframe per clip.** It cannot react to layout changes inside a clip.
-3. **Gemini still gets bbox coordinates in normalized `[0,1]` format.** There is no Gemini-facing `[0,1000]` adapter yet.
-4. **Malformed bbox output is silently dropped.** The pipeline degrades safely, but not audibly.
-5. **Ranking contract is still incomplete.** The prompt asks for `reasoning` / `score_breakdown`, but runtime ranking ignores them.
-6. **Several docs are stale.** The repo now mixes "current truth", "north star", and "already fixed" in a way that is easy to misread.
+1. **Clip selection is still transcript-only.** Visual context does not influence which windows survive Stage 2.
+2. **Stage 3 still emits one merged layout per clip.** Multi-frame sampling exists, but there is no layout timeline when a 60s clip genuinely changes structure mid-run.
+3. **Upload metadata is still dead weight.** `shorts_title`, `description`, and `hashtags` are stored but not consumed by the product pipeline.
+4. **Hook windows still do not change the render in-point.** They protect pruning, not final clip start.
+5. **There is still no automated canonical-video integration test.** The Cathie Wood regression was verified manually, not by a committed end-to-end test.
 
-Your two requested additions are already real open issues in the repo:
+Important shipped changes that are **no longer open issues**:
 
-- **Many keyframes per clip + key-change detection**: not built.
-- **Gemini-facing bbox `[0,1000]` instead of `[0,1]`**: not built.
+- Stage 3 now samples **multiple frames per clip**.
+- The model-facing bbox contract is now **0..1000**, normalized back to internal `[0,1]`.
+- Structured LLM calls now use **`response_schema`** at the provider boundary.
+- Stage 3 fallback now preserves **`clip.layout_hint`** instead of collapsing chart-heavy clips to `sit_center`.
+- Layout cache invalidation now keys off **clip windows**, not arbitrary `clips.json` byte changes.
 
 ---
 
@@ -33,47 +35,39 @@ Your two requested additions are already real open issues in the repo:
 
 | ID | Issue | Evidence | Why it matters |
 |----|-------|----------|----------------|
-| R1 | **Clip selection has no visual context.** | [`src/humeo/pipeline.py`](../src/humeo/pipeline.py) runs Stage 2 clip selection before any keyframe extraction or layout vision; [`docs/TODO.md`](TODO.md) says `narrative_context.json` before clip selection is **not built**. | The selector cannot use chart appearances, slide OCR, scene changes, or on-screen structure when choosing clips. |
-| R2 | **One midpoint keyframe per clip.** | [`src/humeo/pipeline.py`](../src/humeo/pipeline.py) builds one `Scene` per clip for Stage 3; [`humeo-core/src/humeo_core/primitives/ingest.py`](../humeo-core/src/humeo_core/primitives/ingest.py) `extract_keyframes()` samples exactly one frame at the midpoint. | A 50-90s clip can change layout, chart, speaker count, or lighting inside the clip, but the model only sees one frozen frame. |
-| R3 | **No intra-clip key-change detector.** | There is no runtime stage that detects layout changes inside a selected clip; [`docs/TODO.md`](TODO.md) still tracks this as open work. | Even if more frames were sampled, there is no built decision rule yet for where they should come from or how to merge them. |
-| R4 | **Gemini-facing bbox contract is still `[0,1]`, not `[0,1000]`.** | [`src/humeo/layout_vision.py`](../src/humeo/layout_vision.py) prompt explicitly requires normalized `0..1` coords; [`humeo-core/src/humeo_core/schemas.py`](../humeo-core/src/humeo_core/schemas.py) `BoundingBox` validates only `0..1`. | This is a brittle model boundary. Your requested Gemini-friendly integer coordinate contract is not implemented yet. |
-| R5 | **Malformed bbox output is silently dropped.** | [`src/humeo/layout_vision.py`](../src/humeo/layout_vision.py) `_parse_bbox()` catches `Exception` and returns `None` with no warning. | The pipeline does not crash, but a near-miss model output can be discarded silently and make diagnosis harder. |
-| R6 | **Ranking ignores `reasoning` and `score_breakdown`.** | [`src/humeo/prompts/clip_selection_system.jinja2`](../src/humeo/prompts/clip_selection_system.jinja2) asks for both; [`humeo-core/src/humeo_core/schemas.py`](../humeo-core/src/humeo_core/schemas.py) `Clip` has neither; [`src/humeo/clip_selector.py`](../src/humeo/clip_selector.py) ranks only on `virality_score` and `needs_review`. | The prompt implies auditable rule-based ranking, but runtime throws that audit trail away. |
-| R7 | **`shorts_title`, `description`, and `hashtags` are persisted but unused.** | [`humeo-core/src/humeo_core/schemas.py`](../humeo-core/src/humeo_core/schemas.py) `Clip` includes them; [`docs/KNOWN_LIMITATIONS_AND_PROMPT_CONTRACT_GAP.md`](KNOWN_LIMITATIONS_AND_PROMPT_CONTRACT_GAP.md) documents that runtime does not use them. | Extra model tokens are being spent on metadata that does not affect render or export. |
-| R8 | **Hook windows do not change the render in-point.** | [`src/humeo/render_window.py`](../src/humeo/render_window.py) says trim changes export bounds, hook fields do not. | If the intended product behavior is "open at the actual hook", the current code does not do that. |
-| R9 | **Layout vision cache over-invalidates.** | [`src/humeo/layout_vision.py`](../src/humeo/layout_vision.py) hashes the entire `clips.json` file, and [`docs/ENVIRONMENT.md`](ENVIRONMENT.md) says any byte change invalidates the layout cache. | Non-layout metadata edits can trigger unnecessary Gemini vision reruns even when keyframes are unchanged. |
-| R10 | **Gemini calls use JSON mode, not `response_schema`.** | [`src/humeo/clip_selector.py`](../src/humeo/clip_selector.py) and [`src/humeo/layout_vision.py`](../src/humeo/layout_vision.py) call Gemini with `response_mime_type="application/json"` but no `response_schema`. | Schema enforcement happens after the model call instead of at the provider boundary. |
-| R11 | **No end-to-end canonical-video integration test.** | [`docs/SOLUTIONS.md`](SOLUTIONS.md) still lists this as a known gap; current tests are mostly unit and component level. | The repo lacks one high-confidence regression test over the real target workflow. |
+| R1 | **Clip selection has no visual context.** | [`src/humeo/pipeline.py`](../src/humeo/pipeline.py) still runs Stage 2 before Stage 3; there is no `narrative_context.json` pre-selection artifact. | The selector cannot use chart appearances, slide OCR, or scene structure when choosing highlight windows. |
+| R2 | **Stage 3 collapses to one clip-level layout.** | [`src/humeo/layout_vision.py`](../src/humeo/layout_vision.py) samples multiple frames and merges them into one `LayoutInstruction`; render consumes one instruction per clip. | If a clip changes from talking head to chart reveal halfway through, the pipeline still has to choose one dominant layout. |
+| R3 | **Hook windows do not change export start.** | [`src/humeo/render_window.py`](../src/humeo/render_window.py) narrows export bounds only with trims; hook fields are not render inputs. | If product intent is "start exactly on the hook sentence", current code does not do that. |
+| R4 | **`shorts_title`, `description`, and `hashtags` are persisted but unused.** | The fields exist on [`humeo-core/src/humeo_core/schemas.py`](../humeo-core/src/humeo_core/schemas.py), but the render pipeline does not read them. | Model tokens are spent on metadata that never affects render or export. |
+| R5 | **No automated canonical-video regression test.** | The Cathie Wood Azure rerender was verified from real outputs and logs, but no committed end-to-end test exercises that path. | The exact demo source that caught the Stage 3 bug is not yet part of automated regression coverage. |
+| R6 | **Stage 3 quality still depends on local frame sampling working.** | [`src/humeo/layout_vision.py`](../src/humeo/layout_vision.py) requires `cv2` to sample frames; when sampling fails it now falls back safely to `layout_hint`. | The product no longer breaks catastrophically, but quality still drops if sampling dependencies are missing or the source cannot be read. |
 
 ---
 
 ## B. Open backlog that is documented but not built
 
-These are not hidden bugs. They are openly documented "next capabilities" that are still missing.
+These are not hidden bugs. They are openly documented next capabilities that are still missing.
 
 | ID | Backlog item | Where documented | What is missing |
 |----|--------------|------------------|-----------------|
-| B1 | **`narrative_context.json` before clip selection** | [`docs/TODO.md`](TODO.md) | No Stage 1.5 artefact yet; clip selection still depends only on transcript. |
-| B2 | **Many keyframes per clip** | [`docs/TODO.md`](TODO.md), [`docs/KNOWN_LIMITATIONS_AND_PROMPT_CONTRACT_GAP.md`](KNOWN_LIMITATIONS_AND_PROMPT_CONTRACT_GAP.md) | No multiple candidate frames per clip and no merge/vote/timeline design implemented. |
-| B3 | **Key-change detection inside a clip** | [`docs/TODO.md`](TODO.md) | No detector for scene cuts, color/histogram shifts, light-intensity changes, OCR changes, person-count changes, or layout-class changes. |
-| B4 | **Gemini-facing bbox `[0,1000]` with internal normalization back to `[0,1]`** | [`docs/TODO.md`](TODO.md), [`docs/KNOWN_LIMITATIONS_AND_PROMPT_CONTRACT_GAP.md`](KNOWN_LIMITATIONS_AND_PROMPT_CONTRACT_GAP.md) | No Gemini-specific bbox schema or adapter exists yet. |
-| B5 | **Rule-scored clip selection stored in schema** | [`docs/TODO.md`](TODO.md), [`docs/KNOWN_LIMITATIONS_AND_PROMPT_CONTRACT_GAP.md`](KNOWN_LIMITATIONS_AND_PROMPT_CONTRACT_GAP.md) | No `rule_scores` / `selection_reason` fields on `Clip`; no composite ranking logic in code. |
-| B6 | **Cross-episode memory module** | [`docs/SOLUTIONS.md`](SOLUTIONS.md), [`docs/TODO.md`](TODO.md) | No memory/state layer beyond the current work directory and caches. |
+| B1 | **`narrative_context.json` before clip selection** | [`docs/TODO.md`](TODO.md) | No Stage 1.5 visual-summary artifact yet; Stage 2 still depends only on transcript plus hashes. |
+| B2 | **Clip selector consumes visual context** | [`docs/TODO.md`](TODO.md) | No prompt or cache input today changes when the source visuals change but the transcript does not. |
+| B3 | **Layout timeline / per-segment layout output** | [`docs/TODO.md`](TODO.md), [`docs/KNOWN_LIMITATIONS_AND_PROMPT_CONTRACT_GAP.md`](KNOWN_LIMITATIONS_AND_PROMPT_CONTRACT_GAP.md) | Multi-frame evidence is merged to one clip-level answer; there is no time-varying layout plan yet. |
+| B4 | **Cross-episode memory module** | [`docs/SOLUTIONS.md`](SOLUTIONS.md), [`docs/TODO.md`](TODO.md) | No memory/state layer beyond one work dir and its caches. |
+| B5 | **Automated canonical-video integration fixture** | [`docs/SOLUTIONS.md`](SOLUTIONS.md), [`docs/TARGET_VIDEO_ANALYSIS.md`](TARGET_VIDEO_ANALYSIS.md) | No committed regression harness for the real target source. |
 
 ---
 
-## C. Documentation drift and contradictions
+## C. Doc boundaries
 
-These do not always mean code is broken. They mean the repo is harder to reason about than it should be because different docs describe different states.
+These are not bugs. They are the intentional boundaries between different doc types:
 
-| ID | Doc issue | Evidence | What should be treated as truth |
-|----|-----------|----------|---------------------------------|
-| D1 | **Letterboxing is described as still open, but code/tests indicate it is already fixed.** | [`docs/TODO.md`](TODO.md) and [`docs/podcast-to-shorts.md`](podcast-to-shorts.md) still talk about letterboxing as a gap; [`humeo-core/src/humeo_core/primitives/layouts.py`](../humeo-core/src/humeo_core/primitives/layouts.py) uses `force_original_aspect_ratio=increase` + `crop`; [`humeo-core/tests/test_layouts.py`](../humeo-core/tests/test_layouts.py) asserts "no letterbox bars". | Treat current layout code and tests as truth; the roadmap docs need cleanup. |
-| D2 | **`TARGET_VIDEO_ANALYSIS.md` still says the product uses the heuristic scene-classification path.** | [`docs/TARGET_VIDEO_ANALYSIS.md`](TARGET_VIDEO_ANALYSIS.md) says that directly; [`src/humeo/pipeline.py`](../src/humeo/pipeline.py) Stage 3 calls Gemini layout vision. | The product path now uses Gemini vision for per-clip layout. |
-| D3 | **`TARGET_VIDEO_ANALYSIS.md` still talks about a "three-way ffmpeg filtergraph".** | [`docs/TARGET_VIDEO_ANALYSIS.md`](TARGET_VIDEO_ANALYSIS.md) says that; current layout prompt and schemas support five layouts. | The current product has five layout kinds. |
-| D4 | **`SOLUTIONS.md` describes a more HIVE-like ordering than the product currently ships.** | [`docs/SOLUTIONS.md`](SOLUTIONS.md) says "scene segmentation + keyframes first, then LLM reasons over scene narratives"; [`src/humeo/pipeline.py`](../src/humeo/pipeline.py) still does transcript-only clip selection before any visual narrative artefact. | Treat [`PIPELINE.md`](PIPELINE.md) and code as runtime truth; treat `SOLUTIONS.md` partly as design history / intended direction. |
-| D5 | **The bbox contract is described inconsistently across docs.** | [`docs/SOLUTIONS.md`](SOLUTIONS.md) invariant says all bboxes are normalized `[0,1]`; [`docs/TODO.md`](TODO.md) and [`docs/KNOWN_LIMITATIONS_AND_PROMPT_CONTRACT_GAP.md`](KNOWN_LIMITATIONS_AND_PROMPT_CONTRACT_GAP.md) argue for Gemini-facing `[0,1000]` ints with internal normalization. | The current runtime truth is `[0,1]` end-to-end. The desired future split contract is not implemented yet. |
-| D6 | **The repo mixes "current truth" and "north star" without one obvious separator.** | `PIPELINE.md`, `TODO.md`, `SOLUTIONS.md`, `TARGET_VIDEO_ANALYSIS.md`, and `podcast-to-shorts.md` each describe a different level of reality. | Use `PIPELINE.md` for runtime, this file for issues, `TODO.md` for not-built roadmap, `SOLUTIONS.md` for design history. |
+| ID | Boundary | What to treat as truth |
+|----|----------|------------------------|
+| D1 | **`PIPELINE.md` is runtime truth.** Other docs may describe design intent or historical plans. | Use [`PIPELINE.md`](PIPELINE.md) when you need to know what the code runs today. |
+| D2 | **`TODO.md` is partly historical.** It contains design proposals, some of which have now shipped in partial or full form. | Use the status snapshot at the top of [`TODO.md`](TODO.md), not the whole file, for current-state interpretation. |
+| D3 | **`SOLUTIONS.md` mixes history with current invariants.** | Treat it as design rationale plus guardrails, not the canonical pipeline spec. |
+| D4 | **`KNOWN_LIMITATIONS_AND_PROMPT_CONTRACT_GAP.md` is issue-focused, not a feature overview.** | Use it for prompt/runtime mismatches and fix maps, not onboarding. |
 
 ---
 
@@ -82,23 +76,22 @@ These do not always mean code is broken. They mean the repo is harder to reason 
 If you want the shortest accurate description of the project **today**, it is:
 
 1. **What works today**
-   - Ingest, transcript, Gemini clip selection, hook detection, content pruning, per-clip Gemini layout vision, subtitles, and ffmpeg render.
-   - Split-layout rendering currently uses cover-scale plus crop, not letterbox-fit.
-   - There are unit/component tests around ranking, caching, layout planning, bbox parsing, server tools, and rendering primitives.
+   - Ingest, transcript, structured clip selection, hook detection, content pruning, multi-frame layout vision, subtitles, and ffmpeg render.
+   - Split layouts preserve chart geometry again after the 2026-04-22 Stage 3 fallback fix.
+   - Stage LLMs are provider-swappable across `gemini`, `openai`, and `azure`.
+   - There are unit/component tests around ranking, caching, bbox parsing, layout planning, CLI behavior, and rendering primitives.
 
 2. **What is still weak today**
-   - Clip selection still does not see visuals before choosing windows.
-   - Layout vision still assumes one representative frame per clip.
-   - Gemini bbox output handling is still using the older normalized contract and a silent-drop parser.
-   - The ranking prompt is richer than the ranking code.
-   - Docs still blur the line between "shipped", "desired", and "outdated".
+   - Clip selection still cannot see visuals before choosing clips.
+   - Layout decisions are still one-per-clip rather than time-varying.
+   - Some LLM-generated metadata fields still never reach a product surface.
+   - The canonical demo source is still verified manually rather than by automation.
 
 3. **What to fix first if output quality is the priority**
    - Add pre-selection multimodal context.
-   - Replace one-keyframe-per-clip with many-keyframes-per-clip plus a key-change detector.
-   - Move Gemini bbox IO to `[0,1000]` ints and normalize internally.
-   - Add `response_schema` to Gemini calls.
-   - Clean stale docs so the repo tells one story.
+   - Replace one merged layout per clip with a layout timeline when a clip has real visual changes.
+   - Either consume or remove dead upload metadata fields.
+   - Add a real canonical-video regression harness.
 
 ---
 
@@ -106,6 +99,5 @@ If you want the shortest accurate description of the project **today**, it is:
 
 1. [`PIPELINE.md`](PIPELINE.md) for current runtime behavior.
 2. [`KNOWN_LIMITATIONS_AND_PROMPT_CONTRACT_GAP.md`](KNOWN_LIMITATIONS_AND_PROMPT_CONTRACT_GAP.md) for prompt-vs-code mismatches.
-3. [`TODO.md`](TODO.md) for planned upgrades.
-4. [`SOLUTIONS.md`](SOLUTIONS.md) for design history and rejected alternatives.
-
+3. [`TODO.md`](TODO.md) for planned upgrades and historical rationale.
+4. [`SOLUTIONS.md`](SOLUTIONS.md) for design history and invariants.
