@@ -1,7 +1,0 @@
-{
-  "version": 1,
-  "transcript_sha256": "d7eef3d95e9f0354adf9f1f3e0b72d08e7a86fd0de7681dfd14d224cb30d38df",
-  "clips_sha256": "9359e1b5964f88dbbf363cbd31af0085fcfb60d4f8ed8c6cd00d5214ba288bad",
-  "gemini_model": "gemini-3.1-flash-lite-preview",
-  "prune_level": "balanced"
-}

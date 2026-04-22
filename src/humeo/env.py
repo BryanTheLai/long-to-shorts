@@ -22,6 +22,15 @@ def bootstrap_env() -> None:
     _BOOTSTRAPPED = True
 
 
+def _read_first_env(*env_names: str) -> str | None:
+    bootstrap_env()
+    for env_name in env_names:
+        val = (os.environ.get(env_name) or "").strip()
+        if val:
+            return val
+    return None
+
+
 def default_humeo_cache_root() -> Path:
     """Default cache root: ``~/.cache/humeo`` on Unix; ``%LOCALAPPDATA%/humeo`` on Windows."""
     override = (os.environ.get("HUMEO_CACHE_ROOT") or "").strip()
@@ -44,13 +53,45 @@ def resolve_gemini_api_key() -> str:
     lack the Generative Language API scope and produce
     ``403 ACCESS_TOKEN_SCOPE_INSUFFICIENT``.
     """
-    bootstrap_env()
-    for env_name in ("GOOGLE_API_KEY", "GEMINI_API_KEY"):
-        val = (os.environ.get(env_name) or "").strip()
-        if val:
-            return val
+    val = _read_first_env("GOOGLE_API_KEY", "GEMINI_API_KEY")
+    if val:
+        return val
     raise ValueError(
         "Set GOOGLE_API_KEY or GEMINI_API_KEY for Gemini clip selection. "
         "See docs/ENVIRONMENT.md. Without an API key the client may use ADC and fail "
         "with insufficient scopes (403)."
     )
+
+
+def resolve_openai_api_key() -> str:
+    val = _read_first_env("OPENAI_API_KEY")
+    if val:
+        return val
+    raise ValueError("Set OPENAI_API_KEY for OpenAI Responses API stages.")
+
+
+def resolve_openai_base_url() -> str | None:
+    return _read_first_env("OPENAI_BASE_URL")
+
+
+def resolve_azure_openai_api_key() -> str:
+    val = _read_first_env("AZURE_OPENAI_API_KEY")
+    if val:
+        return val
+    raise ValueError("Set AZURE_OPENAI_API_KEY for Azure OpenAI Responses API stages.")
+
+
+def resolve_azure_openai_endpoint() -> str | None:
+    return _read_first_env("AZURE_OPENAI_ENDPOINT", "AZURE_ENDPOINT")
+
+
+def resolve_azure_openai_base_url() -> str | None:
+    return _read_first_env("AZURE_OPENAI_BASE_URL", "AZURE_BASE_URL")
+
+
+def resolve_azure_openai_api_version() -> str | None:
+    return _read_first_env("AZURE_OPENAI_API_VERSION", "OPENAI_API_VERSION")
+
+
+def resolve_azure_openai_deployment() -> str | None:
+    return _read_first_env("AZURE_OPENAI_DEPLOYMENT", "AZURE_DEPLOYMENT")

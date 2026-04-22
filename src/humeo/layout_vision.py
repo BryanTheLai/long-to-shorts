@@ -1,86 +1,157 @@
-"""Per-clip layout + bbox via Gemini vision (no pixel heuristics in the product pipeline)."""
+"""Per-clip multi-frame layout vision via a swappable multimodal LLM."""
 
 from __future__ import annotations
 
 import hashlib
 import json
 import logging
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from google import genai
-from google.genai import types
+import numpy as np
+from pydantic import BaseModel, Field
 
-from humeo_core.schemas import (
-    BoundingBox,
-    LayoutInstruction,
-    LayoutKind,
-    Scene,
-    SceneClassification,
-    SceneRegions,
-)
+from humeo_core.schemas import BoundingBox, Clip, LayoutInstruction, LayoutKind
 from humeo_core.primitives.vision import layout_instruction_from_regions
+from humeo_core.schemas import SceneClassification, SceneRegions
 
-from humeo.config import GEMINI_MODEL, GEMINI_VISION_MODEL, PipelineConfig
-from humeo.env import resolve_gemini_api_key
-from humeo.gemini_generate import gemini_generate_config
+from humeo.config import PipelineConfig
+from humeo.llm_provider import (
+    LlmImageInput,
+    StructuredLlmRequest,
+    call_structured_llm,
+    resolved_llm_identity,
+    resolved_llm_provider,
+    resolved_vision_model as resolved_provider_vision_model,
+)
+from humeo.render_window import clip_for_render, clip_output_duration, source_keep_ranges
 
 logger = logging.getLogger(__name__)
 
 LAYOUT_VISION_META = "layout_vision.meta.json"
 LAYOUT_VISION_JSON = "layout_vision.json"
+LAYOUT_VISION_META_VERSION = 3
+_LAYOUT_POLICY_VERSION = 2
+_MAX_SAMPLED_FRAMES = 6
+_COARSE_FRAME_STEP_SEC = 1.0
+_VISION_HTTP_TIMEOUT_MS = 120_000
+_VISION_RETRYABLE_STATUS_CODES = [429, 500, 502, 503, 504]
+# Stage 3 requests are large multimodal calls. Blind immediate retries mainly turn
+# one deadline into a multi-minute wait; operators can rerun this stage directly.
+_VISION_RETRY_ATTEMPTS = 0
+_VISION_RETRY_INITIAL_DELAY_SEC = 1.0
+_VISION_RETRY_MAX_DELAY_SEC = 4.0
+_VISION_RETRY_EXP_BASE = 2.0
+_VISION_RETRY_JITTER = 0.0
 
-GEMINI_LAYOUT_VISION_PROMPT = """You are framing a vertical short (9:16) from a 16:9 video frame.
+GEMINI_LAYOUT_VISION_PROMPT = """You are framing a vertical short (9:16) from MULTIPLE keyframes of the same clip.
 
-HARD RULE: the final short shows AT MOST TWO on-screen items. An "item" is one
-of person (a human speaker) or chart (slide, graph, data visual, screenshare).
-That gives exactly five layouts to choose from.
-
-Return ONLY a JSON object with this exact shape:
+Return ONLY one JSON object with this exact shape:
 {
-  "layout": "zoom_call_center" | "sit_center" | "split_chart_person" | "split_two_persons" | "split_two_charts",
-  "person_bbox":        {"x1": 0.0, "y1": 0.0, "x2": 1.0, "y2": 1.0} | null,
-  "face_bbox":          {"x1": 0.0, "y1": 0.0, "x2": 1.0, "y2": 1.0} | null,
-  "chart_bbox":         {"x1": 0.0, "y1": 0.0, "x2": 1.0, "y2": 1.0} | null,
-  "second_person_bbox": {"x1": 0.0, "y1": 0.0, "x2": 1.0, "y2": 1.0} | null,
-  "second_face_bbox":   {"x1": 0.0, "y1": 0.0, "x2": 1.0, "y2": 1.0} | null,
-  "second_chart_bbox":  {"x1": 0.0, "y1": 0.0, "x2": 1.0, "y2": 1.0} | null,
-  "reason": "short rationale"
+  "frames": [
+    {
+      "frame_index": 0,
+      "timestamp_sec": 12.34,
+      "layout": "zoom_call_center" | "sit_center" | "split_chart_person" | "split_two_persons" | "split_two_charts",
+      "person_bbox":        {"x1": 0, "y1": 0, "x2": 1000, "y2": 1000} | null,
+      "face_bbox":          {"x1": 0, "y1": 0, "x2": 1000, "y2": 1000} | null,
+      "chart_bbox":         {"x1": 0, "y1": 0, "x2": 1000, "y2": 1000} | null,
+      "second_person_bbox": {"x1": 0, "y1": 0, "x2": 1000, "y2": 1000} | null,
+      "second_face_bbox":   {"x1": 0, "y1": 0, "x2": 1000, "y2": 1000} | null,
+      "second_chart_bbox":  {"x1": 0, "y1": 0, "x2": 1000, "y2": 1000} | null,
+      "reason": "short rationale"
+    }
+  ],
+  "merged": {
+    "layout": "zoom_call_center" | "sit_center" | "split_chart_person" | "split_two_persons" | "split_two_charts",
+    "person_bbox":        {"x1": 0, "y1": 0, "x2": 1000, "y2": 1000} | null,
+    "face_bbox":          {"x1": 0, "y1": 0, "x2": 1000, "y2": 1000} | null,
+    "chart_bbox":         {"x1": 0, "y1": 0, "x2": 1000, "y2": 1000} | null,
+    "second_person_bbox": {"x1": 0, "y1": 0, "x2": 1000, "y2": 1000} | null,
+    "second_face_bbox":   {"x1": 0, "y1": 0, "x2": 1000, "y2": 1000} | null,
+    "second_chart_bbox":  {"x1": 0, "y1": 0, "x2": 1000, "y2": 1000} | null,
+    "reason": "one merged rationale"
+  }
 }
 
-Bbox rules:
-- All bbox coordinates are normalized 0..1 (left/top = 0, right/bottom = 1). Require x2 > x1 and y2 > y1 when a bbox is non-null.
-- person_bbox / second_person_bbox: tight box around each speaker's head AND upper body. If two speakers are visible, ``person_bbox`` is the LEFT speaker and ``second_person_bbox`` is the RIGHT speaker (by x-center).
-- face_bbox / second_face_bbox: TIGHT box around the SPEAKER'S FACE ONLY (forehead to chin, ear to ear). This is NOT the full body — exclude torso, arms, shoulders, tank top, mug, table. The face bbox drives horizontal framing in the 9:16 crop, so putting torso or arms in it will push the face off-screen.
-  * If the subject is shown in profile, the face_bbox still surrounds only the visible half of the head (ear to nose, forehead to chin). It should be roughly square-ish, not a tall body rectangle.
-  * ``face_bbox`` matches ``person_bbox`` (same speaker), ``second_face_bbox`` matches ``second_person_bbox``.
-  * Set face bbox to null ONLY if no face is visible at all (back of head, occluded, off-frame).
-- chart_bbox / second_chart_bbox: slide, chart, graph, or large on-screen graphic. If two charts are visible, ``chart_bbox`` is the LEFT chart and ``second_chart_bbox`` is the RIGHT chart.
-- The two bboxes of the same kind must not overlap meaningfully; they should partition the source frame into distinct regions.
-
-Layout selection (pick exactly one):
-- zoom_call_center: ONE person, tight webcam / video-call headshot filling much of the frame. person_bbox + face_bbox set; others null.
-- sit_center: ONE person, interview / seated framing, or when unsure. person_bbox + face_bbox set; others null.
-- split_chart_person: ONE chart + ONE person in distinct regions (webinar / explainer). person_bbox + face_bbox + chart_bbox set; second_* null.
-- split_two_persons: TWO visible speakers (interview two-up, podcast panel). person_bbox + face_bbox AND second_person_bbox + second_face_bbox set; chart bboxes null.
-- split_two_charts: TWO charts / slides side-by-side. chart_bbox AND second_chart_bbox set; person/face bboxes null.
-
-When in doubt prefer ``sit_center``. Never output more than two of {person, chart} items in total.
-No markdown. JSON only."""
+Rules:
+- The images are ordered by time. Return one `frames[]` entry for each image in that same order.
+- Bboxes use Gemini's preferred 0..1000 coordinate scale. Require x2 > x1 and y2 > y1 for every non-null box.
+- person_bbox / second_person_bbox: tight box around each visible speaker's head and upper body.
+- face_bbox / second_face_bbox: tight box around the visible face only. No torso, shoulders, hands, mug, or chair.
+- chart_bbox / second_chart_bbox: slide, chart, graph, or large on-screen graphic.
+- If two speakers are visible, `person_bbox` is the LEFT speaker and `second_person_bbox` is the RIGHT speaker.
+- If two charts are visible, `chart_bbox` is the LEFT chart and `second_chart_bbox` is the RIGHT chart.
+- merged = one clip-level decision that best fits the dominant layout across the sampled frames. If the clip changes, pick the safest layout that keeps the primary subject(s) readable for most of the clip.
+- When in doubt prefer `sit_center`.
+- No markdown. JSON only.
+"""
 
 
-def _clips_fingerprint(clips_path: Path) -> str:
-    if not clips_path.is_file():
-        return ""
-    return hashlib.sha256(clips_path.read_bytes()).hexdigest()
+class _GeminiBBox1000(BaseModel):
+    x1: float = Field(ge=0.0, le=1000.0)
+    y1: float = Field(ge=0.0, le=1000.0)
+    x2: float = Field(ge=0.0, le=1000.0)
+    y2: float = Field(ge=0.0, le=1000.0)
+
+
+class _GeminiLayoutDecision(BaseModel):
+    layout: str = "sit_center"
+    person_bbox: _GeminiBBox1000 | None = None
+    face_bbox: _GeminiBBox1000 | None = None
+    chart_bbox: _GeminiBBox1000 | None = None
+    second_person_bbox: _GeminiBBox1000 | None = None
+    second_face_bbox: _GeminiBBox1000 | None = None
+    second_chart_bbox: _GeminiBBox1000 | None = None
+    reason: str = ""
+
+
+class _GeminiFrameDecision(_GeminiLayoutDecision):
+    frame_index: int = Field(ge=0)
+    timestamp_sec: float = Field(ge=0.0)
+
+
+class _GeminiMultiFrameResponse(BaseModel):
+    frames: list[_GeminiFrameDecision] = Field(default_factory=list)
+    merged: _GeminiLayoutDecision = Field(default_factory=_GeminiLayoutDecision)
+
+
+@dataclass
+class SampledFrame:
+    frame_id: str
+    timestamp_sec: float
+    path: str
+    width: int
+    height: int
+
+
+def _clip_windows_fingerprint(clips: list[Clip]) -> str:
+    payload = json.dumps(
+        [
+            {
+                "id": clip.clip_id,
+                "start": round(rclip.start_time_sec, 3),
+                "end": round(rclip.end_time_sec, 3),
+                "keep_ranges": [
+                    [round(start, 3), round(end, 3)] for start, end in rclip.keep_ranges_sec
+                ],
+            }
+            for clip in clips
+            for rclip in [clip_for_render(clip)]
+        ],
+        sort_keys=True,
+        ensure_ascii=False,
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
 def layout_cache_valid(
     work_dir: Path,
     *,
     transcript_fp: str,
-    clips_fp: str,
-    vision_model: str,
+    clip_windows_fp: str,
+    llm_identity: dict[str, str],
 ) -> bool:
     meta_path = work_dir / LAYOUT_VISION_META
     data_path = work_dir / LAYOUT_VISION_JSON
@@ -91,9 +162,11 @@ def layout_cache_valid(
     except json.JSONDecodeError:
         return False
     return (
-        meta.get("transcript_sha256") == transcript_fp
-        and meta.get("clips_sha256") == clips_fp
-        and meta.get("gemini_vision_model") == vision_model
+        meta.get("version") == LAYOUT_VISION_META_VERSION
+        and meta.get("transcript_sha256") == transcript_fp
+        and meta.get("clip_windows_sha256") == clip_windows_fp
+        and meta.get("llm") == llm_identity
+        and meta.get("layout_policy_version") == _LAYOUT_POLICY_VERSION
     )
 
 
@@ -113,15 +186,17 @@ def write_layout_cache(
     work_dir: Path,
     *,
     transcript_fp: str,
-    clips_fp: str,
-    vision_model: str,
+    clip_windows_fp: str,
+    llm_identity: dict[str, str],
     clips_payload: dict[str, dict[str, Any]],
 ) -> None:
     work_dir.mkdir(parents=True, exist_ok=True)
     meta = {
+        "version": LAYOUT_VISION_META_VERSION,
         "transcript_sha256": transcript_fp,
-        "clips_sha256": clips_fp,
-        "gemini_vision_model": vision_model,
+        "clip_windows_sha256": clip_windows_fp,
+        "llm": llm_identity,
+        "layout_policy_version": _LAYOUT_POLICY_VERSION,
     }
     (work_dir / LAYOUT_VISION_META).write_text(
         json.dumps(meta, indent=2) + "\n", encoding="utf-8"
@@ -133,81 +208,166 @@ def write_layout_cache(
     logger.info("Wrote %s and %s", LAYOUT_VISION_META, LAYOUT_VISION_JSON)
 
 
-def _parse_bbox(raw: object) -> BoundingBox | None:
-    if not raw or not isinstance(raw, dict):
+def _parse_bbox(
+    raw: object,
+    *,
+    warnings: list[str],
+    field_name: str,
+    frame_width: int | None = None,
+    frame_height: int | None = None,
+) -> BoundingBox | None:
+    if raw is None:
         return None
+    if not isinstance(raw, dict):
+        warnings.append(f"{field_name}: ignored non-object bbox {raw!r}")
+        return None
+
     try:
-        return BoundingBox.model_validate(raw)
-    except Exception:
+        coords = {key: float(raw[key]) for key in ("x1", "y1", "x2", "y2")}
+    except Exception as exc:
+        warnings.append(f"{field_name}: malformed bbox fields ({exc})")
         return None
+
+    scale = "normalized"
+    if max(coords.values()) <= 1.0:
+        normalized = coords
+    elif max(coords.values()) <= 1000.0:
+        scale = "gemini_1000"
+        normalized = {key: value / 1000.0 for key, value in coords.items()}
+    elif frame_width and frame_height:
+        scale = "pixel_fallback"
+        normalized = {
+            "x1": coords["x1"] / float(frame_width),
+            "y1": coords["y1"] / float(frame_height),
+            "x2": coords["x2"] / float(frame_width),
+            "y2": coords["y2"] / float(frame_height),
+        }
+    else:
+        warnings.append(
+            f"{field_name}: dropped bbox {coords!r} (coords exceed 1000 and frame size unknown)"
+        )
+        return None
+
+    try:
+        box = BoundingBox.model_validate(normalized)
+    except Exception as exc:
+        warnings.append(f"{field_name}: dropped malformed {scale} bbox {coords!r} ({exc})")
+        return None
+
+    if scale != "normalized":
+        warnings.append(f"{field_name}: normalized {scale} bbox -> [0,1]")
+    return box
+
+
+def _subject_width_zoom(person: BoundingBox | None, face: BoundingBox | None) -> float:
+    width = person.width if person is not None else 0.0
+    if width <= 0.0 and face is not None:
+        width = min(1.0, face.width * 2.2)
+    if width <= 0.0:
+        return 1.1
+    zoom = 1.0 + max(0.0, 0.55 - width) * 1.1
+    return round(max(1.0, min(1.3, zoom)), 3)
 
 
 def _instruction_from_gemini_json(
-    scene_id: str, data: dict[str, Any]
+    scene_id: str,
+    data: dict[str, Any],
+    *,
+    frame_width: int | None = None,
+    frame_height: int | None = None,
+    warnings: list[str] | None = None,
 ) -> LayoutInstruction:
-    """Translate Gemini's JSON into a validated :class:`LayoutInstruction`.
-
-    Falls back to ``sit_center`` whenever the LLM returns something the
-    contract doesn't support, so a bad vision call can never crash the
-    pipeline. Also downgrades "two-item" layouts when the second bbox is
-    missing -- e.g. ``split_two_persons`` with only one person_bbox drops
-    to ``sit_center`` rather than rendering a silently-broken split.
-    """
+    """Translate Gemini JSON into a validated :class:`LayoutInstruction`."""
+    warnings = warnings if warnings is not None else []
 
     layout_str = str(data.get("layout", "sit_center")).strip()
     try:
         kind = LayoutKind(layout_str)
     except ValueError:
+        warnings.append(f"layout: unknown value {layout_str!r}; defaulted to sit_center")
         kind = LayoutKind.SIT_CENTER
 
-    pb = _parse_bbox(data.get("person_bbox"))
-    fb = _parse_bbox(data.get("face_bbox"))
-    cb = _parse_bbox(data.get("chart_bbox"))
-    p2 = _parse_bbox(data.get("second_person_bbox"))
-    f2 = _parse_bbox(data.get("second_face_bbox"))
-    c2 = _parse_bbox(data.get("second_chart_bbox"))
+    pb = _parse_bbox(
+        data.get("person_bbox"),
+        warnings=warnings,
+        field_name="person_bbox",
+        frame_width=frame_width,
+        frame_height=frame_height,
+    )
+    fb = _parse_bbox(
+        data.get("face_bbox"),
+        warnings=warnings,
+        field_name="face_bbox",
+        frame_width=frame_width,
+        frame_height=frame_height,
+    )
+    cb = _parse_bbox(
+        data.get("chart_bbox"),
+        warnings=warnings,
+        field_name="chart_bbox",
+        frame_width=frame_width,
+        frame_height=frame_height,
+    )
+    p2 = _parse_bbox(
+        data.get("second_person_bbox"),
+        warnings=warnings,
+        field_name="second_person_bbox",
+        frame_width=frame_width,
+        frame_height=frame_height,
+    )
+    f2 = _parse_bbox(
+        data.get("second_face_bbox"),
+        warnings=warnings,
+        field_name="second_face_bbox",
+        frame_width=frame_width,
+        frame_height=frame_height,
+    )
+    c2 = _parse_bbox(
+        data.get("second_chart_bbox"),
+        warnings=warnings,
+        field_name="second_chart_bbox",
+        frame_width=frame_width,
+        frame_height=frame_height,
+    )
     reason = str(data.get("reason", ""))[:400]
 
-    # Downgrade any split that is missing its required bboxes, so we never
-    # emit a split layout that will render as garbage.
     if kind == LayoutKind.SPLIT_CHART_PERSON and (pb is None or cb is None):
-        kind = LayoutKind.SIT_CENTER if pb is not None else LayoutKind.SIT_CENTER
+        warnings.append("split_chart_person missing required boxes; downgraded to sit_center")
+        kind = LayoutKind.SIT_CENTER
     if kind == LayoutKind.SPLIT_TWO_PERSONS and (pb is None or p2 is None):
+        warnings.append("split_two_persons missing required boxes; downgraded to sit_center")
         kind = LayoutKind.SIT_CENTER
     if kind == LayoutKind.SPLIT_TWO_CHARTS and (cb is None or c2 is None):
+        warnings.append("split_two_charts missing required boxes; downgraded to sit_center")
         kind = LayoutKind.SIT_CENTER
 
-    regions = SceneRegions(
-        scene_id=scene_id, person_bbox=pb, chart_bbox=cb, raw_reason=reason
-    )
+    regions = SceneRegions(scene_id=scene_id, person_bbox=pb, chart_bbox=cb, raw_reason=reason)
     classification = SceneClassification(
-        scene_id=scene_id, layout=kind, confidence=1.0, reason=reason
+        scene_id=scene_id,
+        layout=kind,
+        confidence=1.0,
+        reason=reason,
     )
-    instr = layout_instruction_from_regions(
-        regions, classification, clip_id=scene_id
-    )
+    instr = layout_instruction_from_regions(regions, classification, clip_id=scene_id)
 
     updates: dict[str, Any] = {}
-
-    # CENTERING FIX: the single-person 9:16 crop is driven by ``person_x_norm``.
-    # A ``person_bbox`` that spans head + torso + arms is fine for framing
-    # *extent* but its center_x can drift far from the actual face when the
-    # subject is in profile or asymmetric (one arm up, mug on the table, etc).
-    # Prefer the tight ``face_bbox`` center when the model gave us one so the
-    # face lands in the visual center of the vertical crop instead of the
-    # torso doing.
     face_center = _face_center_x(fb, pb)
     if face_center is not None:
         updates["person_x_norm"] = face_center
+
+    if kind == LayoutKind.ZOOM_CALL_CENTER:
+        updates["zoom"] = _subject_width_zoom(pb, fb)
 
     if kind == LayoutKind.SPLIT_CHART_PERSON and pb is not None and cb is not None:
         updates["split_chart_region"] = cb
         updates["split_person_region"] = pb
     elif kind == LayoutKind.SPLIT_TWO_PERSONS and pb is not None and p2 is not None:
-        # Order by x-center so ``split_person_region`` is always the LEFT speaker.
         left, right = sorted((pb, p2), key=lambda b: b.center_x)
         updates["split_person_region"] = left
         updates["split_second_person_region"] = right
+        face_centers = [(left, fb), (right, f2)]
+        if face_centers[0][1] is not None:
+            updates["person_x_norm"] = _face_center_x(face_centers[0][1], left) or left.center_x
     elif kind == LayoutKind.SPLIT_TWO_CHARTS and cb is not None and c2 is not None:
         left, right = sorted((cb, c2), key=lambda b: b.center_x)
         updates["split_chart_region"] = left
@@ -219,136 +379,407 @@ def _instruction_from_gemini_json(
 
 
 def _face_center_x(
-    face: BoundingBox | None, person: BoundingBox | None
+    face: BoundingBox | None,
+    person: BoundingBox | None,
 ) -> float | None:
-    """Pick a horizontal center to aim the 9:16 crop at.
-
-    Priority:
-    1. ``face`` bbox center when it looks reasonable (narrow, plausibly
-       inside the matching person bbox).
-    2. No override (caller keeps the person-bbox center, or the default 0.5
-       when neither was provided).
-
-    We sanity-check the face box because Gemini sometimes echoes the full
-    person bbox into ``face_bbox``. If the face bbox is as wide as the
-    person bbox, it gives us nothing new; fall back to the person center
-    rather than pretending we have a tighter signal.
-    """
+    """Pick a horizontal center to aim the 9:16 crop at."""
     if face is None:
         return None
     face_w = max(0.0, face.x2 - face.x1)
     if face_w <= 0.0:
         return None
-    # A real face in a 16:9 frame is rarely wider than ~35% of frame width,
-    # even for tight webcam framing. A face "bbox" that's wider than that
-    # almost certainly includes torso and is no better than person_bbox.
     if face_w > 0.40:
         return None
-    # If we have a person bbox too, require the face center to sit inside it
-    # — otherwise the model got confused and matched the wrong subject.
-    if person is not None:
-        if not (person.x1 - 0.02 <= face.center_x <= person.x2 + 0.02):
-            return None
+    if person is not None and not (person.x1 - 0.02 <= face.center_x <= person.x2 + 0.02):
+        return None
     return float(face.center_x)
 
 
-def _call_gemini_vision(keyframe_path: str, model_name: str) -> dict[str, Any]:
-    path = Path(keyframe_path)
-    data = path.read_bytes()
-    mime = "image/jpeg" if path.suffix.lower() in (".jpg", ".jpeg") else "image/png"
-    client = genai.Client(api_key=resolve_gemini_api_key())
-    response = client.models.generate_content(
-        model=model_name,
-        contents=[
-            types.Part.from_text(text=GEMINI_LAYOUT_VISION_PROMPT),
-            types.Part.from_bytes(data=data, mime_type=mime),
-        ],
-        config=gemini_generate_config(
-            temperature=0.2,
-            response_mime_type="application/json",
-        ),
+def _source_time_from_output_time(
+    keep_ranges: list[tuple[float, float]],
+    output_time_sec: float,
+) -> float:
+    remaining = output_time_sec
+    for start, end in keep_ranges:
+        span = end - start
+        if remaining <= span:
+            return start + remaining
+        remaining -= span
+    return keep_ranges[-1][1]
+
+
+def _uniform_source_timestamps(keep_ranges: list[tuple[float, float]], count: int) -> list[float]:
+    total = sum(end - start for start, end in keep_ranges)
+    if total <= 0.0 or count <= 0:
+        return []
+    if count == 1:
+        return [_source_time_from_output_time(keep_ranges, total / 2.0)]
+    return [
+        _source_time_from_output_time(keep_ranges, total * ratio)
+        for ratio in np.linspace(0.15, 0.85, count)
+    ]
+
+
+def _sample_frame_signature(cap: Any, timestamp_sec: float) -> np.ndarray | None:
+    import cv2
+
+    cap.set(cv2.CAP_PROP_POS_MSEC, timestamp_sec * 1000.0)
+    ok, frame = cap.read()
+    if not ok or frame is None:
+        return None
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    return cv2.resize(gray, (160, 90), interpolation=cv2.INTER_AREA)
+
+
+def _frame_diff_peak_timestamps(
+    source_video: Path,
+    keep_ranges: list[tuple[float, float]],
+    *,
+    peak_count: int,
+) -> tuple[list[float], list[str]]:
+    if peak_count <= 0:
+        return [], []
+    warnings: list[str] = []
+    try:
+        import cv2
+    except Exception as exc:
+        return [], [f"OpenCV unavailable; skipped frame-diff peaks ({exc})."]
+
+    timestamps: list[float] = []
+    for start, end in keep_ranges:
+        cursor = start
+        while cursor < end:
+            timestamps.append(cursor)
+            cursor += _COARSE_FRAME_STEP_SEC
+        timestamps.append(end)
+    timestamps = sorted({round(ts, 3) for ts in timestamps})
+    if len(timestamps) < 2:
+        return [], warnings
+
+    cap = cv2.VideoCapture(str(source_video))
+    if not cap.isOpened():
+        return [], [f"Failed to open source video for frame sampling: {source_video}"]
+
+    diffs: list[tuple[float, float]] = []
+    prev_sig: np.ndarray | None = None
+    prev_ts: float | None = None
+    try:
+        for ts in timestamps:
+            sig = _sample_frame_signature(cap, ts)
+            if sig is None:
+                warnings.append(f"Skipped unreadable coarse frame at {ts:.2f}s")
+                continue
+            if prev_sig is not None and prev_ts is not None:
+                diff = float(np.mean(np.abs(sig.astype(np.float32) - prev_sig.astype(np.float32))))
+                diffs.append((diff, ts))
+            prev_sig = sig
+            prev_ts = ts
+    finally:
+        cap.release()
+
+    picked: list[float] = []
+    min_distance = 1.5
+    for _, ts in sorted(diffs, key=lambda item: item[0], reverse=True):
+        if any(abs(ts - other) < min_distance for other in picked):
+            continue
+        picked.append(ts)
+        if len(picked) >= peak_count:
+            break
+    return sorted(picked), warnings
+
+
+def _sample_clip_frames(
+    source_video: Path,
+    clip: Clip,
+    *,
+    keyframes_root: Path,
+) -> tuple[list[SampledFrame], list[str]]:
+    warnings: list[str] = []
+    try:
+        import cv2
+    except Exception as exc:
+        return [], [f"OpenCV unavailable; cannot sample layout frames ({exc})."]
+
+    rclip = clip_for_render(clip)
+    keep_ranges = source_keep_ranges(rclip)
+    total_duration = clip_output_duration(rclip)
+    if not keep_ranges or total_duration <= 0.0:
+        return [], [f"Clip {clip.clip_id} has no non-empty keep ranges for layout sampling."]
+
+    uniform_count = 4 if total_duration >= 20.0 else 3
+    peak_count = 2 if total_duration < 20.0 else 3
+    timestamps = _uniform_source_timestamps(keep_ranges, uniform_count)
+    peak_ts, peak_warnings = _frame_diff_peak_timestamps(
+        source_video,
+        keep_ranges,
+        peak_count=peak_count,
     )
-    if not response.text:
-        raise RuntimeError("Gemini vision returned empty response")
-    return json.loads(response.text)
+    warnings.extend(peak_warnings)
+    timestamps.extend(peak_ts)
+    timestamps = sorted({round(ts, 3) for ts in timestamps})[:_MAX_SAMPLED_FRAMES]
+
+    clip_dir = keyframes_root / clip.clip_id
+    clip_dir.mkdir(parents=True, exist_ok=True)
+    cap = cv2.VideoCapture(str(source_video))
+    if not cap.isOpened():
+        return [], [f"Failed to open source video for clip frame sampling: {source_video}"]
+
+    sampled: list[SampledFrame] = []
+    try:
+        for idx, ts in enumerate(timestamps):
+            cap.set(cv2.CAP_PROP_POS_MSEC, ts * 1000.0)
+            ok, frame = cap.read()
+            if not ok or frame is None:
+                warnings.append(f"Skipped unreadable sampled frame at {ts:.2f}s")
+                continue
+            out_path = clip_dir / f"{clip.clip_id}_{idx:02d}_{int(round(ts * 1000)):06d}.jpg"
+            cv2.imwrite(str(out_path), frame)
+            height, width = frame.shape[:2]
+            sampled.append(
+                SampledFrame(
+                    frame_id=f"{clip.clip_id}_{idx:02d}",
+                    timestamp_sec=ts,
+                    path=str(out_path),
+                    width=width,
+                    height=height,
+                )
+            )
+    finally:
+        cap.release()
+    return sampled, warnings
+
+
+def _call_gemini_vision(
+    sampled_frames: list[SampledFrame],
+    model_name: str,
+    *,
+    provider: str,
+) -> tuple[str, _GeminiMultiFrameResponse]:
+    images: list[LlmImageInput] = []
+    for idx, frame in enumerate(sampled_frames):
+        path = Path(frame.path)
+        mime = "image/jpeg" if path.suffix.lower() in (".jpg", ".jpeg") else "image/png"
+        images.append(
+            LlmImageInput(
+                path=path,
+                mime_type=mime,
+                label=f"FRAME {idx}: timestamp_sec={frame.timestamp_sec:.2f}",
+            )
+        )
+
+    response = call_structured_llm(
+        StructuredLlmRequest(
+            stage_name="layout vision",
+            model=model_name,
+            system_instruction=GEMINI_LAYOUT_VISION_PROMPT,
+            temperature=0.2,
+            response_schema=_GeminiMultiFrameResponse,
+            images=tuple(images),
+            timeout_ms=_VISION_HTTP_TIMEOUT_MS,
+            max_retries=_VISION_RETRY_ATTEMPTS,
+        ),
+        provider=provider,
+    )
+    parsed = response.parsed if isinstance(response.parsed, _GeminiMultiFrameResponse) else None
+    raw = response.raw_text
+    if parsed is None:
+        if not raw:
+            raise RuntimeError("Layout vision model returned neither text nor parsed response")
+        parsed = _GeminiMultiFrameResponse.model_validate_json(raw)
+    if not raw:
+        raw = parsed.model_dump_json()
+    return raw, parsed
+
+
+def _fallback_merge(
+    clip_id: str,
+    frame_instructions: list[LayoutInstruction],
+) -> LayoutInstruction:
+    if not frame_instructions:
+        return LayoutInstruction(clip_id=clip_id, layout=LayoutKind.SIT_CENTER)
+    counts: dict[LayoutKind, int] = {}
+    for instr in frame_instructions:
+        counts[instr.layout] = counts.get(instr.layout, 0) + 1
+    dominant = max(counts.items(), key=lambda item: (item[1], item[0].value))[0]
+    candidates = [instr for instr in frame_instructions if instr.layout == dominant]
+    chosen = candidates[len(candidates) // 2]
+    return chosen.model_copy(update={"clip_id": clip_id})
 
 
 def infer_layout_instructions(
-    scenes: list[Scene],
+    source_video: Path,
+    clips: list[Clip],
     *,
     gemini_vision_model: str,
+    provider: str,
+    keyframes_root: Path,
 ) -> tuple[dict[str, LayoutInstruction], dict[str, dict[str, Any]]]:
-    """Return ``(clip_id -> LayoutInstruction, clip_id -> raw_gemini_json)``."""
-
+    """Return ``(clip_id -> LayoutInstruction, clip_id -> cache payload)``."""
     out: dict[str, LayoutInstruction] = {}
-    raw_by_clip: dict[str, dict[str, Any]] = {}
+    payload_by_clip: dict[str, dict[str, Any]] = {}
     model_name = gemini_vision_model.strip()
 
-    for s in scenes:
-        sid = s.scene_id
-        if not s.keyframe_path:
-            logger.warning("No keyframe for %s; using sit_center.", sid)
-            out[sid] = LayoutInstruction(clip_id=sid, layout=LayoutKind.SIT_CENTER)
-            raw_by_clip[sid] = {"error": "no keyframe", "layout": "sit_center"}
+    for clip in clips:
+        warnings: list[str] = []
+        sampled_frames, sample_warnings = _sample_clip_frames(
+            source_video,
+            clip,
+            keyframes_root=keyframes_root,
+        )
+        warnings.extend(sample_warnings)
+        if not sampled_frames:
+            out[clip.clip_id] = LayoutInstruction(clip_id=clip.clip_id, layout=LayoutKind.SIT_CENTER)
+            payload_by_clip[clip.clip_id] = {
+                "instruction": json.loads(out[clip.clip_id].model_dump_json()),
+                "sampled_frames": [],
+                "frame_results": [],
+                "raw": {"error": "no sampled frames", "layout": "sit_center"},
+                "warnings": warnings + ["No sampled frames; defaulted to sit_center."],
+            }
             continue
-        try:
-            data = _call_gemini_vision(s.keyframe_path, model_name)
-            raw_by_clip[sid] = data
-            out[sid] = _instruction_from_gemini_json(sid, data)
-        except Exception as e:
-            logger.warning("Gemini vision failed for %s: %s — defaulting sit_center", sid, e)
-            out[sid] = LayoutInstruction(clip_id=sid, layout=LayoutKind.SIT_CENTER)
-            raw_by_clip[sid] = {"error": str(e), "layout": "sit_center"}
 
-    return out, raw_by_clip
+        frame_results_payload: list[dict[str, Any]] = []
+        frame_instructions: list[LayoutInstruction] = []
+        merged_instruction: LayoutInstruction | None = None
+        raw_payload: dict[str, Any]
+        try:
+            raw_text, parsed = _call_gemini_vision(
+                sampled_frames,
+                model_name,
+                provider=provider,
+            )
+            raw_payload = json.loads(raw_text)
+
+            for idx, frame in enumerate(sampled_frames):
+                frame_data = (
+                    parsed.frames[idx].model_dump()
+                    if idx < len(parsed.frames)
+                    else {
+                        "frame_index": idx,
+                        "timestamp_sec": frame.timestamp_sec,
+                        "layout": "sit_center",
+                        "reason": "missing frame result",
+                    }
+                )
+                frame_warnings: list[str] = []
+                frame_instruction = _instruction_from_gemini_json(
+                    clip.clip_id,
+                    frame_data,
+                    frame_width=frame.width,
+                    frame_height=frame.height,
+                    warnings=frame_warnings,
+                )
+                frame_results_payload.append(
+                    {
+                        "frame_id": frame.frame_id,
+                        "timestamp_sec": frame.timestamp_sec,
+                        "instruction": json.loads(frame_instruction.model_dump_json()),
+                        "raw": frame_data,
+                        "warnings": frame_warnings,
+                    }
+                )
+                frame_instructions.append(frame_instruction)
+
+            merged_warnings: list[str] = []
+            merged_instruction = _instruction_from_gemini_json(
+                clip.clip_id,
+                parsed.merged.model_dump(),
+                frame_width=sampled_frames[0].width,
+                frame_height=sampled_frames[0].height,
+                warnings=merged_warnings,
+            )
+            warnings.extend(merged_warnings)
+        except Exception as exc:
+            failure_context = {
+                "provider": provider,
+                "model": model_name,
+                "frame_count": len(sampled_frames),
+                "timeout_ms": _VISION_HTTP_TIMEOUT_MS,
+                "max_retries": _VISION_RETRY_ATTEMPTS,
+            }
+            warnings.append(
+                "Layout vision model failed "
+                f"({json.dumps(failure_context, sort_keys=True)}): {exc}"
+            )
+            raw_payload = {
+                "error": str(exc),
+                "layout": "sit_center",
+                "request": failure_context,
+            }
+
+        if merged_instruction is None:
+            merged_instruction = _fallback_merge(clip.clip_id, frame_instructions)
+
+        out[clip.clip_id] = merged_instruction
+        payload_by_clip[clip.clip_id] = {
+            "instruction": json.loads(merged_instruction.model_dump_json()),
+            "sampled_frames": [
+                {
+                    "frame_id": frame.frame_id,
+                    "timestamp_sec": frame.timestamp_sec,
+                    "path": frame.path,
+                    "width": frame.width,
+                    "height": frame.height,
+                }
+                for frame in sampled_frames
+            ],
+            "frame_results": frame_results_payload,
+            "raw": raw_payload,
+            "warnings": warnings,
+        }
+
+    return out, payload_by_clip
 
 
 def resolved_vision_model(config: PipelineConfig) -> str:
-    if config.gemini_vision_model:
-        return config.gemini_vision_model.strip()
-    if GEMINI_VISION_MODEL:
-        return GEMINI_VISION_MODEL
-    return (config.gemini_model or GEMINI_MODEL).strip()
+    return resolved_provider_vision_model(config)
 
 
 def run_layout_vision_stage(
     work_dir: Path,
-    scenes: list[Scene],
     *,
+    source_video: Path,
+    clips: list[Clip],
     transcript_fp: str,
-    clips_path: Path,
     config: PipelineConfig,
 ) -> dict[str, LayoutInstruction]:
-    """Load cache or call Gemini vision for each keyframe; persist JSON artifacts."""
-    clips_fp = _clips_fingerprint(clips_path)
+    """Load cache or call the configured layout vision model on multiple frames per clip."""
+    clip_windows_fp = _clip_windows_fingerprint(clips)
+    provider = resolved_llm_provider(config)
     vm = resolved_vision_model(config)
+    llm_identity = resolved_llm_identity(config, vision=True)
 
     if (
         not config.force_layout_vision
-        and layout_cache_valid(work_dir, transcript_fp=transcript_fp, clips_fp=clips_fp, vision_model=vm)
+        and layout_cache_valid(
+            work_dir,
+            transcript_fp=transcript_fp,
+            clip_windows_fp=clip_windows_fp,
+            llm_identity=llm_identity,
+        )
     ):
         cached = load_layout_cache(work_dir)
         if cached:
-            logger.info("Layout vision cache hit; skipping Gemini vision calls.")
+            logger.info("Layout vision cache hit; skipping model calls.")
             return {
-                k: LayoutInstruction.model_validate(v["instruction"])
-                for k, v in cached.items()
-                if isinstance(v, dict) and "instruction" in v
+                clip_id: LayoutInstruction.model_validate(payload["instruction"])
+                for clip_id, payload in cached.items()
+                if isinstance(payload, dict) and "instruction" in payload
             }
 
-    instructions, raw_by_clip = infer_layout_instructions(scenes, gemini_vision_model=vm)
-
-    payload: dict[str, dict[str, Any]] = {}
-    for sid, instr in instructions.items():
-        payload[sid] = {
-            "instruction": json.loads(instr.model_dump_json()),
-            "raw": raw_by_clip.get(sid, {}),
-        }
+    keyframes_root = work_dir / "keyframes"
+    instructions, payload = infer_layout_instructions(
+        source_video,
+        clips,
+        gemini_vision_model=vm,
+        provider=provider,
+        keyframes_root=keyframes_root,
+    )
     write_layout_cache(
         work_dir,
         transcript_fp=transcript_fp,
-        clips_fp=clips_fp,
-        vision_model=vm,
+        clip_windows_fp=clip_windows_fp,
+        llm_identity=llm_identity,
         clips_payload=payload,
     )
     return instructions

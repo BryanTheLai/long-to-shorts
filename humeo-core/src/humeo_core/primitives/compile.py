@@ -207,6 +207,37 @@ def _has_audio_stream(media_path: str) -> bool:
     return out.returncode == 0 and "audio" in (out.stdout or "").lower()
 
 
+def _build_concat_prefix(
+    keep_ranges: list[tuple[float, float]],
+    *,
+    include_audio: bool,
+) -> tuple[str, str, str | None]:
+    video_parts: list[str] = []
+    audio_parts: list[str] = []
+    concat_inputs: list[str] = []
+
+    for idx, (start, end) in enumerate(keep_ranges):
+        video_label = f"v{idx}"
+        video_parts.append(
+            f"[0:v]trim=start={start:.3f}:end={end:.3f},setpts=PTS-STARTPTS[{video_label}]"
+        )
+        concat_inputs.append(f"[{video_label}]")
+        if include_audio:
+            audio_label = f"a{idx}"
+            audio_parts.append(
+                f"[0:a:0]atrim=start={start:.3f}:end={end:.3f},asetpts=PTS-STARTPTS[{audio_label}]"
+            )
+            concat_inputs.append(f"[{audio_label}]")
+
+    concat_label = "[vclip][aclip]" if include_audio else "[vclip]"
+    concat = (
+        "".join(concat_inputs)
+        + f"concat=n={len(keep_ranges)}:v=1:a={1 if include_audio else 0}{concat_label}"
+    )
+    parts = video_parts + audio_parts + [concat]
+    return ";".join(parts), "vclip", "aclip" if include_audio else None
+
+
 def build_ffmpeg_cmd(
     req: RenderRequest,
     *,
@@ -215,11 +246,25 @@ def build_ffmpeg_cmd(
     include_audio: bool = True,
 ) -> list[str]:
     exe = _ensure_ffmpeg() if req.mode != "dry_run" else "ffmpeg"
+    use_concat = bool(req.clip.keep_ranges_sec)
+    input_label = "0:v"
+    audio_label: str | None = None
+    prefix = ""
+    if use_concat:
+        prefix, input_label, audio_label = _build_concat_prefix(
+            list(req.clip.keep_ranges_sec),
+            include_audio=include_audio,
+        )
 
     plan = plan_layout(
-        req.layout, out_w=req.width, out_h=req.height, src_w=src_w, src_h=src_h
+        req.layout,
+        out_w=req.width,
+        out_h=req.height,
+        src_w=src_w,
+        src_h=src_h,
+        input_label=input_label,
     )
-    fg = plan.filtergraph
+    fg = plan.filtergraph if not prefix else f"{prefix};{plan.filtergraph}"
 
     # Skip the drawtext title overlay on split layouts: the top band already
     # shows a slide/chart with its own baked-in title, so adding an overlay
@@ -287,7 +332,16 @@ def build_ffmpeg_cmd(
     ]
 
     if include_audio:
-        cmd.extend(["-map", "0:a:0", "-c:a", "aac", "-b:a", "160k"])
+        cmd.extend(
+            [
+                "-map",
+                f"[{audio_label}]" if audio_label is not None else "0:a:0",
+                "-c:a",
+                "aac",
+                "-b:a",
+                "160k",
+            ]
+        )
 
     cmd.extend(["-movflags", "+faststart", req.output_path])
     return cmd
