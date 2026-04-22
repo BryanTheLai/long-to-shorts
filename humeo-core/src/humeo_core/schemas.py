@@ -268,6 +268,18 @@ class SceneRegions(BaseModel):
 # ---------------------------------------------------------------------------
 
 
+class RuleScore(BaseModel):
+    """One named rule outcome produced by clip selection."""
+
+    rule_id: str
+    score: float = Field(
+        ge=0.0,
+        le=1.0,
+        description="Normalized rule score (0 = absent, 1 = very strong).",
+    )
+    reason: str = ""
+
+
 class Clip(BaseModel):
     clip_id: str
     topic: str
@@ -302,11 +314,21 @@ class Clip(BaseModel):
     description: str = ""
     hashtags: list[str] = Field(default_factory=list)
     layout_hint: LayoutKind | None = None
+    selection_reason: str = ""
+    rule_scores: list[RuleScore] = Field(default_factory=list)
     needs_review: bool = False
     review_reason: str = ""
+    keep_ranges_sec: list[tuple[float, float]] = Field(
+        default_factory=list,
+        description=(
+            "Clip-relative [start, end] spans to KEEP after inner audio pruning. "
+            "Empty means keep the whole clip after trim_start_sec/trim_end_sec."
+        ),
+    )
 
     @model_validator(mode="after")
     def _timing_consistency(self) -> "Clip":
+        eps = 1e-6
         if self.end_time_sec <= self.start_time_sec:
             raise ValueError("end_time_sec must be greater than start_time_sec")
         dur = self.end_time_sec - self.start_time_sec
@@ -314,12 +336,21 @@ class Clip(BaseModel):
         if (hs is None) ^ (he is None):
             raise ValueError("hook_start_sec and hook_end_sec must both be set or both omitted")
         if hs is not None and he is not None:
-            if not (0 <= hs < he <= dur):
+            if hs < -eps or he > dur + eps or not (hs + eps < he):
                 raise ValueError(
                     "hook window must satisfy 0 <= hook_start_sec < hook_end_sec <= clip duration"
                 )
-        if self.trim_start_sec + self.trim_end_sec > dur:
+        if self.trim_start_sec + self.trim_end_sec > dur + eps:
             raise ValueError("trim_start_sec + trim_end_sec must not exceed clip duration")
+        prev_end = -1.0
+        for idx, (start, end) in enumerate(self.keep_ranges_sec):
+            if start < -eps or end > dur + eps or not (start + eps < end):
+                raise ValueError(
+                    "each keep_ranges_sec span must satisfy 0 <= start < end <= clip duration"
+                )
+            if idx > 0 and start < prev_end - eps:
+                raise ValueError("keep_ranges_sec spans must be sorted and non-overlapping")
+            prev_end = end
         return self
 
     @property

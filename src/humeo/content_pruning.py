@@ -2,25 +2,23 @@
 
 This is the HIVE "irrelevant content pruning" sub-task, applied at the
 *inner-clip* scale rather than the scene scale. After the clip selector has
-chosen 5 x 50-90s windows, we ask Gemini to tighten each window by dropping
+chosen 5 x 50-90s windows, we ask the configured LLM to tighten each window by dropping
 weak lead-in (throat-clears, false starts, slow setup) and weak tail content
 (trailing ramble, fade-out talk).
 
-Design choices kept deliberately minimal:
+Design choices:
 
-- **No schema changes.** The existing ``Clip.trim_start_sec`` /
-  ``Clip.trim_end_sec`` fields already feed ``humeo.render_window`` and
-  ``humeo_core.primitives.compile`` via ``-ss`` / ``-t``. Writing the pruned
-  in / out points into those fields tightens the exported window for free.
-- **Contiguous trimming only** (V1). We move the in-point forward and the
-  out-point backward; we do not cut in the middle. That keeps subtitles and
-  layout vision untouched.
+- **Keep the useful semantic trim stage.** The stage LLM still decides the outer
+  in/out window because that is the existing product behavior and it is
+  already cached.
+- **Add audio-first inner keep ranges.** Silence and filled-pause removal are
+  computed from `source_audio.wav`, not ASR text, and written to
+  ``Clip.keep_ranges_sec`` for honest downstream concat/subtitle timing.
 - **Strict clamping** after the LLM returns, so the final duration always
   respects ``MIN_CLIP_DURATION_SEC`` and any declared hook window is
   preserved.
-- **Never fatal.** Any failure (API error, malformed JSON, missing clip_id)
-  degrades to no-op trims (0.0 / 0.0) for that clip. The pipeline still
-  produces output identical to the pre-Stage-2.5 behaviour.
+- **Never fatal.** Any failure (API error, malformed JSON, missing audio
+  model, missing clip_id) degrades to no-op for that sub-part of the stage.
 """
 
 from __future__ import annotations
@@ -33,29 +31,35 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Literal, TypeVar
 
-from google import genai
 from pydantic import BaseModel, Field, ValidationError
 
 from humeo_core.schemas import Clip
 
+from humeo.audio_pruning import compute_audio_keep_ranges, load_audio_buffer
 from humeo.config import (
-    GEMINI_MODEL,
     MAX_CLIP_DURATION_SEC,
     MIN_CLIP_DURATION_SEC,
     PipelineConfig,
 )
-from humeo.env import resolve_gemini_api_key
-from humeo.gemini_generate import gemini_generate_config
+from humeo.llm_provider import (
+    StructuredLlmRequest,
+    call_structured_llm,
+    resolved_llm_identity,
+    resolved_llm_provider,
+    resolved_text_model,
+)
 from humeo.prompt_loader import content_pruning_system_prompt
+from humeo.render_window import clip_output_duration
 
 logger = logging.getLogger(__name__)
 
 T = TypeVar("T")
 
-PRUNE_META_VERSION = 1
+PRUNE_META_VERSION = 3
 PRUNE_META_FILENAME = "prune.meta.json"
 PRUNE_RAW_FILENAME = "prune_raw.json"
 PRUNE_ARTIFACT_FILENAME = "prune.json"
+_AUDIO_POLICY_VERSION = 1
 
 LLM_MAX_ATTEMPTS = 3
 LLM_RETRY_DELAY_SEC = 2.0
@@ -104,7 +108,7 @@ _MAX_TOTAL_TRIM_PCT: dict[PruneLevel, float] = {
 
 
 class _PruneDecision(BaseModel):
-    """Per-clip decision returned by Gemini (clip-relative seconds)."""
+    """Per-clip decision returned by the stage LLM (clip-relative seconds)."""
 
     clip_id: str
     trim_start_sec: float = Field(default=0.0, ge=0.0)
@@ -340,7 +344,15 @@ def apply_prune_decisions(
     for clip in clips:
         d = by_id.get(clip.clip_id)
         if d is None or level == "off":
-            out.append(clip.model_copy(update={"trim_start_sec": 0.0, "trim_end_sec": 0.0}))
+            out.append(
+                clip.model_copy(
+                    update={
+                        "trim_start_sec": 0.0,
+                        "trim_end_sec": 0.0,
+                        "keep_ranges_sec": [],
+                    }
+                )
+            )
             continue
         ts, te, stats = _clamp_decision(
             clip, d.trim_start_sec, d.trim_end_sec, level=level
@@ -369,7 +381,9 @@ def apply_prune_decisions(
                 ts,
                 te,
             )
-        candidate = clip.model_copy(update={"trim_start_sec": ts, "trim_end_sec": te})
+        candidate = clip.model_copy(
+            update={"trim_start_sec": ts, "trim_end_sec": te, "keep_ranges_sec": []}
+        )
         if transcript is not None:
             snapped_ts, snapped_te = _snap_trims_to_segment_boundaries(
                 candidate, transcript, level=level
@@ -389,6 +403,67 @@ def apply_prune_decisions(
                 )
         out.append(candidate)
     return out
+
+
+def apply_audio_keep_ranges(
+    clips: list[Clip],
+    *,
+    source_audio_path: Path,
+) -> tuple[list[Clip], dict[str, dict[str, Any]]]:
+    """Compute audio-first keep ranges for each clip from the shared WAV."""
+    if not source_audio_path.is_file():
+        logger.warning(
+            "Missing source_audio.wav (%s); skipping audio keep-range pruning.",
+            source_audio_path,
+        )
+        return clips, {
+            clip.clip_id: {
+                "audio_backend": {"speech": "none", "filled_pause": "none"},
+                "warnings": ["source_audio.wav missing; skipped audio keep-range pruning."],
+            }
+            for clip in clips
+        }
+
+    try:
+        audio = load_audio_buffer(source_audio_path)
+    except Exception as exc:
+        logger.warning(
+            "Failed to load source_audio.wav (%s); skipping audio keep-range pruning.",
+            exc,
+        )
+        return clips, {
+            clip.clip_id: {
+                "audio_backend": {"speech": "none", "filled_pause": "none"},
+                "warnings": [f"source_audio.wav unreadable; skipped audio keep-range pruning ({exc})."],
+            }
+            for clip in clips
+        }
+    diagnostics: dict[str, dict[str, Any]] = {}
+    updated: list[Clip] = []
+    for clip in clips:
+        try:
+            result = compute_audio_keep_ranges(audio, clip)
+            updated.append(
+                clip.model_copy(update={"keep_ranges_sec": result.keep_ranges_sec})
+            )
+            diagnostics[clip.clip_id] = {
+                "outer_window_sec": list(result.outer_window_sec),
+                "speech_ranges_sec": [list(rng) for rng in result.speech_ranges_sec],
+                "filled_pause_ranges_sec": [list(rng) for rng in result.filled_pause_ranges_sec],
+                **result.diagnostics,
+            }
+        except Exception as exc:
+            logger.warning(
+                "Clip %s: audio keep-range detection failed (%s); keeping trimmed window only.",
+                clip.clip_id,
+                exc,
+            )
+            updated.append(clip.model_copy(update={"keep_ranges_sec": []}))
+            diagnostics[clip.clip_id] = {
+                "audio_backend": {"speech": "none", "filled_pause": "none"},
+                "warnings": [f"audio keep-range detection failed: {exc}"],
+            }
+    return updated, diagnostics
 
 
 # ---------------------------------------------------------------------------
@@ -471,14 +546,19 @@ def _clips_fingerprint(clips: list[Clip]) -> str:
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
-def _resolved_gemini_model(config: PipelineConfig) -> str:
-    return (config.gemini_model or GEMINI_MODEL).strip()
+def _audio_fingerprint(audio_path: Path) -> str:
+    sha = hashlib.sha256()
+    with open(audio_path, "rb") as f:
+        for chunk in iter(lambda: f.read(1024 * 1024), b""):
+            sha.update(chunk)
+    return sha.hexdigest()
 
 
 def _prune_meta(
     *,
     transcript_fp: str,
     clips_fp: str,
+    audio_fp: str,
     config: PipelineConfig,
     level: PruneLevel,
 ) -> dict[str, Any]:
@@ -486,8 +566,10 @@ def _prune_meta(
         "version": PRUNE_META_VERSION,
         "transcript_sha256": transcript_fp,
         "clips_sha256": clips_fp,
-        "gemini_model": _resolved_gemini_model(config),
+        "audio_sha256": audio_fp,
+        "llm": resolved_llm_identity(config),
         "prune_level": level,
+        "audio_policy_version": _AUDIO_POLICY_VERSION,
     }
 
 
@@ -512,6 +594,7 @@ def _load_cached_clips(work_dir: Path, clips: list[Clip]) -> list[Clip] | None:
                 update={
                     "trim_start_sec": float(cached_c.get("trim_start_sec", 0.0)),
                     "trim_end_sec": float(cached_c.get("trim_end_sec", 0.0)),
+                    "keep_ranges_sec": list(cached_c.get("keep_ranges_sec") or []),
                 }
             )
         )
@@ -524,14 +607,18 @@ def _write_cache(
     pruned: list[Clip],
     meta: dict[str, Any],
     raw_response: str,
+    diagnostics: dict[str, dict[str, Any]],
 ) -> None:
     work_dir.mkdir(parents=True, exist_ok=True)
     payload = {
+        "version": PRUNE_META_VERSION,
         "clips": [
             {
                 "clip_id": c.clip_id,
                 "trim_start_sec": c.trim_start_sec,
                 "trim_end_sec": c.trim_end_sec,
+                "keep_ranges_sec": [list(rng) for rng in c.keep_ranges_sec],
+                "diagnostics": diagnostics.get(c.clip_id, {}),
             }
             for c in pruned
         ]
@@ -556,6 +643,7 @@ def _prune_cache_valid(
     *,
     transcript_fp: str,
     clips_fp: str,
+    audio_fp: str,
     config: PipelineConfig,
     level: PruneLevel,
 ) -> bool:
@@ -573,15 +661,19 @@ def _prune_cache_valid(
         return False
     if meta.get("clips_sha256") != clips_fp:
         return False
-    if meta.get("gemini_model") != _resolved_gemini_model(config):
+    if meta.get("audio_sha256") != audio_fp:
+        return False
+    if meta.get("llm") != resolved_llm_identity(config):
         return False
     if meta.get("prune_level") != level:
+        return False
+    if meta.get("audio_policy_version") != _AUDIO_POLICY_VERSION:
         return False
     return True
 
 
 # ---------------------------------------------------------------------------
-# Gemini call
+# LLM call
 # ---------------------------------------------------------------------------
 
 
@@ -610,12 +702,13 @@ def request_prune_decisions(
     transcript: dict,
     *,
     level: PruneLevel,
+    config: PipelineConfig | None = None,
     gemini_model: str | None = None,
 ) -> tuple[list[_PruneDecision], str]:
-    """Call Gemini for (potentially) one decision per clip.
+    """Call the configured LLM for (potentially) one decision per clip.
 
     Returns ``(decisions, raw_response)``. ``raw_response`` is the literal
-    string Gemini returned (cached to ``prune_raw.json`` for audit). On
+    string the model returned (cached to ``prune_raw.json`` for audit). On
     transport or parse failure this raises; callers should catch and treat as
     no-op.
     """
@@ -629,30 +722,33 @@ def request_prune_decisions(
     )
     user_text = _build_user_message(clips, transcript)
 
-    model_name = (gemini_model or GEMINI_MODEL).strip()
-    client = genai.Client(api_key=resolve_gemini_api_key())
+    provider = resolved_llm_provider(config)
+    model_name = resolved_text_model(config, model_override=gemini_model)
 
     def _call() -> str:
         logger.info(
-            "Gemini content pruning (model=%s, level=%s, clips=%d)...",
+            "%s content pruning (model=%s, level=%s, clips=%d)...",
+            provider,
             model_name,
             level,
             len(clips),
         )
-        response = client.models.generate_content(
-            model=model_name,
-            contents=user_text,
-            config=gemini_generate_config(
+        response = call_structured_llm(
+            StructuredLlmRequest(
+                stage_name="content pruning",
+                model=model_name,
                 system_instruction=system,
+                user_text=user_text,
                 temperature=0.2,
-                response_mime_type="application/json",
+                response_schema=_PruneResponse,
             ),
+            provider=provider,
         )
-        if not response.text:
-            raise RuntimeError("Gemini returned empty response text for content pruning")
-        return response.text
+        if not response.raw_text and response.parsed is None:
+            raise RuntimeError("LLM returned empty response text for content pruning")
+        return response.raw_text or response.parsed.model_dump_json()
 
-    raw = _retry_llm("Gemini content pruning", _call)
+    raw = _retry_llm("Content pruning", _call)
     decisions = _parse_decisions(raw)
     return decisions, raw
 
@@ -674,23 +770,28 @@ def run_content_pruning_stage(
 
     - When ``config.prune_level == "off"``, this is a cheap no-op: returns a
       copy of the clips with trim_start/end zeroed.
-    - Otherwise, tries the cache first, then calls Gemini. A failing call
+    - Otherwise, tries the cache first, then calls the configured LLM. A failing call
       degrades to no-op (the pipeline is never killed by Stage 2.5).
     """
     level = _validated_level(config.prune_level)
     if level == "off":
         logger.info("Content pruning disabled (prune_level=off); skipping Stage 2.5.")
         return [
-            clip.model_copy(update={"trim_start_sec": 0.0, "trim_end_sec": 0.0})
+            clip.model_copy(
+                update={"trim_start_sec": 0.0, "trim_end_sec": 0.0, "keep_ranges_sec": []}
+            )
             for clip in clips
         ]
 
     clips_fp = _clips_fingerprint(clips)
+    source_audio_path = work_dir / "source_audio.wav"
+    audio_fp = _audio_fingerprint(source_audio_path) if source_audio_path.is_file() else ""
 
     if not config.force_content_pruning and _prune_cache_valid(
         work_dir,
         transcript_fp=transcript_fp,
         clips_fp=clips_fp,
+        audio_fp=audio_fp,
         config=config,
         level=level,
     ):
@@ -703,32 +804,45 @@ def run_content_pruning_stage(
             )
             return cached
 
+    raw = '{"decisions": []}'
     try:
         decisions, raw = request_prune_decisions(
-            clips, transcript, level=level, gemini_model=config.gemini_model
+            clips,
+            transcript,
+            level=level,
+            config=config,
+            gemini_model=config.gemini_model,
         )
     except Exception as e:
         logger.warning(
-            "Content pruning call failed (%s); continuing with un-pruned clips.", e
+            "Content pruning call failed (%s); continuing with zero outer trims.", e
         )
-        return [
-            clip.model_copy(update={"trim_start_sec": 0.0, "trim_end_sec": 0.0})
-            for clip in clips
-        ]
+        decisions = []
 
     pruned = apply_prune_decisions(
         clips, decisions, level=level, transcript=transcript
+    )
+    pruned, diagnostics = apply_audio_keep_ranges(
+        pruned,
+        source_audio_path=source_audio_path,
     )
     _log_prune_summary(pruned, clips)
 
     meta = _prune_meta(
         transcript_fp=transcript_fp,
         clips_fp=clips_fp,
+        audio_fp=audio_fp,
         config=config,
         level=level,
     )
     try:
-        _write_cache(work_dir, pruned=pruned, meta=meta, raw_response=raw)
+        _write_cache(
+            work_dir,
+            pruned=pruned,
+            meta=meta,
+            raw_response=raw,
+            diagnostics=diagnostics,
+        )
     except Exception as e:
         logger.warning("Failed to write prune cache (%s); continuing.", e)
     return pruned
@@ -744,9 +858,7 @@ def _validated_level(level: str | None) -> PruneLevel:
 
 def _log_prune_summary(pruned: list[Clip], original: list[Clip]) -> None:
     total_before = sum(c.duration_sec for c in original)
-    total_after = sum(
-        max(0.0, c.duration_sec - c.trim_start_sec - c.trim_end_sec) for c in pruned
-    )
+    total_after = sum(clip_output_duration(c) for c in pruned)
     removed = total_before - total_after
     pct = (removed / total_before * 100.0) if total_before > 0 else 0.0
     logger.info(
@@ -756,13 +868,14 @@ def _log_prune_summary(pruned: list[Clip], original: list[Clip]) -> None:
         pct,
     )
     for c in pruned:
-        if c.trim_start_sec > 0 or c.trim_end_sec > 0:
-            final = c.duration_sec - c.trim_start_sec - c.trim_end_sec
+        if c.trim_start_sec > 0 or c.trim_end_sec > 0 or c.keep_ranges_sec:
+            final = clip_output_duration(c)
             logger.info(
-                "  [%s] trim=%.2fs/%.2fs  %.1fs -> %.1fs",
+                "  [%s] trim=%.2fs/%.2fs keep_ranges=%d  %.1fs -> %.1fs",
                 c.clip_id,
                 c.trim_start_sec,
                 c.trim_end_sec,
+                len(c.keep_ranges_sec),
                 c.duration_sec,
                 final,
             )

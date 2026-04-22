@@ -7,6 +7,12 @@ from datetime import datetime
 from pathlib import Path
 
 from humeo.config import PipelineConfig
+from humeo.pipeline_debug import (
+    STAGE_ORDER,
+    build_stage_inspection,
+    normalize_stage,
+    write_inspection,
+)
 from humeo.pipeline import run_pipeline
 
 
@@ -34,14 +40,14 @@ def build_parser() -> argparse.ArgumentParser:
 Examples:
   humeo --long-to-shorts "https://youtube.com/watch?v=abc123"
   humeo --long-to-shorts "https://youtube.com/watch?v=abc123" --work-dir .humeo_work
-  humeo --long-to-shorts "https://youtube.com/watch?v=abc123" --gemini-model gemini-2.0-flash
+  humeo --long-to-shorts "https://youtube.com/watch?v=abc123" --llm-model gemini-2.0-flash
         """,
     )
 
     parser.add_argument(
         "--long-to-shorts",
         metavar="URL",
-        required=True,
+        default=None,
         help="YouTube video URL to process",
     )
 
@@ -74,9 +80,20 @@ Examples:
     )
 
     parser.add_argument(
-        "--gemini-model",
+        "--llm-provider",
+        choices=["gemini", "openai", "azure"],
         default=None,
-        help="Gemini model id for clip selection (default: GEMINI_MODEL env; see humeo.config).",
+        help="LLM provider for stages 2/2.25/2.5/3 (default: HUMEO_LLM_PROVIDER env or gemini).",
+    )
+
+    parser.add_argument(
+        "--llm-model", "--gemini-model",
+        dest="llm_model",
+        default=None,
+        help=(
+            "Model/deployment id for stages 2/2.25/2.5. "
+            "Legacy alias: --gemini-model."
+        ),
     )
 
     parser.add_argument(
@@ -86,15 +103,19 @@ Examples:
     )
 
     parser.add_argument(
-        "--gemini-vision-model",
+        "--llm-vision-model", "--gemini-vision-model",
+        dest="llm_vision_model",
         default=None,
-        help="Gemini model for per-keyframe layout + bbox (default: GEMINI_VISION_MODEL env or --gemini-model).",
+        help=(
+            "Optional separate model/deployment id for stage 3 layout vision. "
+            "Legacy alias: --gemini-vision-model."
+        ),
     )
 
     parser.add_argument(
         "--force-layout-vision",
         action="store_true",
-        help="Re-run Gemini vision for layouts even when layout_vision.meta.json matches.",
+        help="Re-run layout vision even when layout_vision.meta.json matches.",
     )
 
     parser.add_argument(
@@ -130,6 +151,39 @@ Examples:
         "--force-hook-detection",
         action="store_true",
         help="Re-run hook-detection LLM even when hooks.meta.json matches.",
+    )
+
+    parser.add_argument(
+        "--start-at",
+        choices=STAGE_ORDER,
+        default=None,
+        help=(
+            "Start the pipeline at this stage using cached artifacts from --work-dir "
+            "or the resolved video cache work dir."
+        ),
+    )
+
+    parser.add_argument(
+        "--stop-after",
+        choices=STAGE_ORDER,
+        default=None,
+        help="Stop the pipeline after this stage instead of rendering all the way through.",
+    )
+
+    parser.add_argument(
+        "--inspect-stage",
+        choices=STAGE_ORDER,
+        default=None,
+        help=(
+            "Write a stable JSON inspection file for one stage. Without --start-at / "
+            "--stop-after this reads existing runtime artifacts only."
+        ),
+    )
+
+    parser.add_argument(
+        "--clip-id",
+        default=None,
+        help="Optional clip id filter for --inspect-stage (for example 003).",
     )
 
     parser.add_argument(
@@ -214,8 +268,9 @@ def main():
         work_dir=work_dir,
         use_video_cache=use_video_cache,
         cache_root=args.cache_root,
-        gemini_model=args.gemini_model,
-        gemini_vision_model=args.gemini_vision_model,
+        llm_provider=args.llm_provider,
+        llm_model=args.llm_model,
+        llm_vision_model=args.llm_vision_model,
         force_clip_selection=force_clip_selection,
         force_layout_vision=force_layout_vision,
         clean_run=args.clean_run,
@@ -228,13 +283,52 @@ def main():
         subtitle_margin_v=args.subtitle_margin_v,
         subtitle_max_words_per_cue=args.subtitle_max_words,
         subtitle_max_cue_sec=args.subtitle_max_cue_sec,
+        start_at=args.start_at,
+        stop_after=args.stop_after,
+        inspect_stage=args.inspect_stage,
+        clip_id=args.clip_id,
     )
 
     try:
+        inspect_only = (
+            normalize_stage(args.inspect_stage) is not None
+            and normalize_stage(args.start_at) is None
+            and normalize_stage(args.stop_after) is None
+        )
+
+        if config.youtube_url is None and config.work_dir is None:
+            parser.error("--work-dir is required when --long-to-shorts is omitted.")
+        if (
+            not inspect_only
+            and config.youtube_url is None
+            and normalize_stage(args.start_at) in {None, "ingest"}
+        ):
+            parser.error("--long-to-shorts is required when the run includes Stage 1 ingest.")
+
+        if inspect_only:
+            assert config.work_dir is not None
+            payload = build_stage_inspection(
+                config.work_dir,
+                stage=normalize_stage(args.inspect_stage),
+                clip_id=config.clip_id,
+                config=config,
+            )
+            path = write_inspection(
+                config.work_dir,
+                stage=normalize_stage(args.inspect_stage),
+                payload=payload,
+                clip_id=config.clip_id,
+            )
+            print(f"Inspection written: {path}")
+            return
+
         outputs = run_pipeline(config)
-        print(f"\nDone. {len(outputs)} shorts generated in: {config.output_dir}")
-        for p in outputs:
-            print(f"   -> {p}")
+        if normalize_stage(args.stop_after) and normalize_stage(args.stop_after) != "render":
+            print(f"\nDone. Stopped after: {args.stop_after}")
+        else:
+            print(f"\nDone. {len(outputs)} shorts generated in: {config.output_dir}")
+            for p in outputs:
+                print(f"   -> {p}")
     except KeyboardInterrupt:
         print("\nPipeline interrupted.")
         sys.exit(1)

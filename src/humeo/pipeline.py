@@ -1,20 +1,42 @@
-"""End-to-end product pipeline."""
+"""End-to-end product pipeline with explicit stage controls."""
+
+from __future__ import annotations
 
 import json
 import logging
 from pathlib import Path
 
-from humeo_core.primitives.ingest import extract_keyframes
-from humeo_core.schemas import LayoutInstruction, LayoutKind, Scene
+from humeo_core.schemas import LayoutInstruction, LayoutKind
 
-from humeo.clip_selection_cache import cache_valid, load_meta, transcript_fingerprint, write_artifacts
-from humeo.clip_selector import load_clips, save_clips, select_clips
+from humeo.clip_selection_cache import (
+    cache_valid,
+    load_meta,
+    load_raw_response,
+    should_rerank,
+    transcript_fingerprint,
+    write_artifacts,
+)
+from humeo.clip_selector import (
+    load_candidate_pool_from_raw_response,
+    load_clips,
+    rank_and_filter_clips,
+    save_clips,
+    select_clips,
+)
 from humeo.config import PipelineConfig
 from humeo.content_pruning import run_content_pruning_stage
 from humeo.cutter import generate_ass
 from humeo.hook_detector import run_hook_detection_stage
 from humeo.ingest import download_video, extract_audio, transcribe_whisperx
 from humeo.layout_vision import run_layout_vision_stage
+from humeo.pipeline_debug import (
+    PipelineState,
+    build_stage_inspection,
+    load_state_before_stage,
+    normalize_stage,
+    stage_range,
+    write_inspection,
+)
 from humeo.render_window import clip_for_render
 from humeo.reframe_ffmpeg import reframe_clip_ffmpeg
 from humeo.video_cache import (
@@ -32,6 +54,8 @@ def _ensure_work_dir(config: PipelineConfig) -> None:
     """Resolve ``config.work_dir`` when unset (per-video cache) or ensure it exists."""
     if config.work_dir is not None:
         return
+    if not config.youtube_url:
+        raise RuntimeError("--work-dir is required when no URL is provided.")
     config.work_dir = resolve_work_directory(
         youtube_url=config.youtube_url,
         explicit_work_dir=None,
@@ -40,28 +64,34 @@ def _ensure_work_dir(config: PipelineConfig) -> None:
     )
 
 
-def run_pipeline(config: PipelineConfig) -> list[Path]:
-    """
-    Execute the full podcast-to-shorts pipeline.
-
-    Args:
-        config: Pipeline configuration.
-
-    Returns:
-        List of paths to the final short-form MP4 files.
-    """
-    logger.info("=" * 60)
-    logger.info("HUMEO PIPELINE START")
-    logger.info("URL: %s", config.youtube_url)
-    logger.info("Output: %s", config.output_dir)
-    logger.info("=" * 60)
-
-    _ensure_work_dir(config)
+def _write_stage_inspection_if_requested(
+    config: PipelineConfig,
+    *,
+    stage: str,
+) -> None:
+    inspect_stage = normalize_stage(config.inspect_stage)
+    if inspect_stage != stage:
+        return
     assert config.work_dir is not None
+    payload = build_stage_inspection(
+        config.work_dir,
+        stage=inspect_stage,
+        clip_id=config.clip_id,
+        config=config,
+    )
+    path = write_inspection(
+        config.work_dir,
+        stage=inspect_stage,
+        payload=payload,
+        clip_id=config.clip_id,
+    )
+    logger.info("Wrote %s inspection: %s", inspect_stage, path)
 
-    # ------------------------------------------------------------------
-    # Stage 1: Ingest
-    # ------------------------------------------------------------------
+
+def _run_ingest_stage(config: PipelineConfig, state: PipelineState) -> PipelineState:
+    if not config.youtube_url:
+        raise RuntimeError("Stage 'ingest' requires --long-to-shorts URL.")
+
     logger.info("--- STAGE 1: INGESTION ---")
 
     source_video = config.work_dir / "source.mp4"
@@ -94,14 +124,22 @@ def run_pipeline(config: PipelineConfig) -> list[Path]:
             cache_root=config.cache_root,
         )
 
-    # ------------------------------------------------------------------
-    # Stage 2: Clip Selection
-    # ------------------------------------------------------------------
+    state.source_video = source_video
+    state.source_audio = config.work_dir / "source_audio.wav"
+    state.transcript = transcript
+    state.transcript_fp = transcript_fingerprint(transcript)
+    return state
+
+
+def _run_clip_selection_stage(config: PipelineConfig, state: PipelineState) -> PipelineState:
     logger.info("--- STAGE 2: CLIP SELECTION ---")
+    assert state.transcript is not None
+    assert state.transcript_fp is not None
 
     clips_path = config.work_dir / "clips.json"
-    fp = transcript_fingerprint(transcript)
+    fp = state.transcript_fp
     meta = load_meta(config.work_dir)
+
     cache_hit = (
         clips_path.is_file()
         and not config.force_clip_selection
@@ -109,12 +147,44 @@ def run_pipeline(config: PipelineConfig) -> list[Path]:
         and cache_valid(meta, fp, config)
     )
 
+    rerank_hit = (
+        clips_path.is_file()
+        and not config.force_clip_selection
+        and meta is not None
+        and should_rerank(meta, fp, config)
+    )
+
     if cache_hit:
         clips = load_clips(clips_path)
-        logger.info("Clip selection cache hit (transcript + provider/model unchanged); skipping LLM.")
+        logger.info(
+            "Clip selection cache hit (transcript + provider/model + ranking policy unchanged); "
+            "skipping stage LLM."
+        )
+    elif rerank_hit:
+        raw = load_raw_response(config.work_dir)
+        if raw is None:
+            raise RuntimeError(
+                "clips.meta.json says re-rank is possible, but clip_selection_raw.json is missing."
+            )
+        candidates = load_candidate_pool_from_raw_response(raw)
+        clips = rank_and_filter_clips(
+            candidates,
+            quality_threshold=config.clip_selection_quality_threshold,
+            min_kept=config.clip_selection_min_kept,
+            max_kept=config.clip_selection_max_kept,
+        )
+        save_clips(clips, clips_path)
+        write_artifacts(
+            config.work_dir,
+            transcript=state.transcript,
+            config=config,
+            raw_response=raw,
+        )
+        logger.info("Clip selection cache re-rank hit (reused raw LLM pool, no new LLM call).")
     else:
         clips, raw = select_clips(
-            transcript,
+            state.transcript,
+            config=config,
             gemini_model=config.gemini_model,
             candidate_count=config.clip_selection_candidate_count,
             quality_threshold=config.clip_selection_quality_threshold,
@@ -124,11 +194,12 @@ def run_pipeline(config: PipelineConfig) -> list[Path]:
         save_clips(clips, clips_path)
         write_artifacts(
             config.work_dir,
-            transcript=transcript,
+            transcript=state.transcript,
             config=config,
             raw_response=raw,
         )
 
+    state.clips = clips
     logger.info("Selected %d clips:", len(clips))
     for clip in clips:
         logger.info(
@@ -140,81 +211,74 @@ def run_pipeline(config: PipelineConfig) -> list[Path]:
             clip.virality_score,
             clip.topic,
         )
+    return state
 
-    # ------------------------------------------------------------------
-    # Stage 2.25: Hook Detection
-    # ------------------------------------------------------------------
-    # The clip selector is unreliable at localising the hook sentence and
-    # tends to return the 0.0-3.0s placeholder verbatim, which would disable
-    # start-trim in Stage 2.5. This stage asks Gemini to localise the real
-    # hook per clip so Stage 2.5 can clamp against a real window.
+
+def _run_hook_stage(config: PipelineConfig, state: PipelineState) -> PipelineState:
     logger.info("--- STAGE 2.25: HOOK DETECTION (enabled=%s) ---", config.detect_hooks)
-    clips = run_hook_detection_stage(
+    assert state.clips is not None
+    assert state.transcript is not None
+    assert state.transcript_fp is not None
+    state.clips = run_hook_detection_stage(
         config.work_dir,
-        clips,
-        transcript,
-        transcript_fp=fp,
+        state.clips,
+        state.transcript,
+        transcript_fp=state.transcript_fp,
         config=config,
     )
+    return state
 
-    # ------------------------------------------------------------------
-    # Stage 2.5: Content Pruning (HIVE-style inner-clip tightening)
-    # ------------------------------------------------------------------
-    # Tightens each candidate window by writing trim_start_sec / trim_end_sec
-    # on the Clip models. keyframe extraction and layout vision below both
-    # consume ``clip_for_render(clip)`` so they automatically operate on the
-    # pruned window without further changes.
+
+def _run_pruning_stage(config: PipelineConfig, state: PipelineState) -> PipelineState:
     logger.info("--- STAGE 2.5: CONTENT PRUNING (level=%s) ---", config.prune_level)
-    clips = run_content_pruning_stage(
+    assert state.clips is not None
+    assert state.transcript is not None
+    assert state.transcript_fp is not None
+    state.clips = run_content_pruning_stage(
         config.work_dir,
-        clips,
-        transcript,
-        transcript_fp=fp,
+        state.clips,
+        state.transcript,
+        transcript_fp=state.transcript_fp,
         config=config,
     )
+    return state
 
-    # ------------------------------------------------------------------
-    # Stage 3: Clip layouts
-    # ------------------------------------------------------------------
+
+def _run_layout_stage(config: PipelineConfig, state: PipelineState) -> PipelineState:
     logger.info("--- STAGE 3: CLIP LAYOUTS ---")
-
-    keyframes_dir = config.work_dir / "keyframes"
-    clip_scenes: list[Scene] = []
-    for clip in clips:
-        rw = clip_for_render(clip)
-        clip_scenes.append(
-            Scene(scene_id=clip.clip_id, start_time=rw.start_time_sec, end_time=rw.end_time_sec)
-        )
-    clip_scenes = extract_keyframes(str(source_video), clip_scenes, str(keyframes_dir))
-    layout_instructions = run_layout_vision_stage(
+    assert state.clips is not None
+    assert state.source_video is not None
+    assert state.transcript_fp is not None
+    state.layout_instructions = run_layout_vision_stage(
         config.work_dir,
-        clip_scenes,
-        transcript_fp=fp,
-        clips_path=clips_path,
+        source_video=state.source_video,
+        clips=state.clips,
+        transcript_fp=state.transcript_fp,
         config=config,
     )
+    return state
 
-    # ------------------------------------------------------------------
-    # Stage 4: Render
-    # ------------------------------------------------------------------
+
+def _run_render_stage(config: PipelineConfig, state: PipelineState) -> list[Path]:
     logger.info("--- STAGE 4: RENDER ---")
+    assert state.clips is not None
+    assert state.source_video is not None
 
     final_outputs: list[Path] = []
     subtitles_dir = config.work_dir / "subtitles"
     subtitles_dir.mkdir(parents=True, exist_ok=True)
+    layout_instructions = state.layout_instructions or {}
 
-    for clip in clips:
+    for clip in state.clips:
         instr = layout_instructions.get(clip.clip_id)
         if instr is None:
             hint = clip.layout_hint or LayoutKind.SIT_CENTER
             instr = LayoutInstruction(clip_id=clip.clip_id, layout=hint)
         clip.layout = instr.layout
         rclip = clip_for_render(clip)
-        # ASS (not SRT) so the caption file's PlayResY matches the output
-        # resolution and libass' font/margin scaling is 1:1.
         subtitle_path = generate_ass(
             rclip,
-            transcript,
+            state.transcript,
             subtitles_dir,
             max_words_per_cue=config.subtitle_max_words_per_cue,
             max_cue_sec=config.subtitle_max_cue_sec,
@@ -231,11 +295,8 @@ def run_pipeline(config: PipelineConfig) -> list[Path]:
         if final_path.exists() and config.overwrite_outputs:
             logger.info("Clip %s exists; overwriting due to clean-run settings.", clip.clip_id)
 
-        # Font size and margin are already baked into the ASS file at
-        # PlayResY=1920, so the compile primitive does not need to override
-        # them -- but it still does, harmlessly, for single-source overrides.
         reframe_clip_ffmpeg(
-            input_path=source_video,
+            input_path=state.source_video,
             output_path=final_path,
             clip=rclip,
             layout_instruction=instr,
@@ -246,13 +307,85 @@ def run_pipeline(config: PipelineConfig) -> list[Path]:
         )
         final_outputs.append(final_path)
 
-    # ------------------------------------------------------------------
-    # Done
-    # ------------------------------------------------------------------
+    return final_outputs
+
+
+def run_pipeline(config: PipelineConfig) -> list[Path]:
+    """Execute the pipeline or a controlled stage slice."""
+    _ensure_work_dir(config)
+    assert config.work_dir is not None
+
+    start_stage, stop_stage = stage_range(
+        start_at=normalize_stage(config.start_at),
+        stop_after=normalize_stage(config.stop_after),
+    )
+
+    logger.info("=" * 60)
+    logger.info("HUMEO PIPELINE START")
+    logger.info("URL: %s", config.youtube_url or "(artifact-only run)")
+    logger.info("Output: %s", config.output_dir)
+    logger.info("Work dir: %s", config.work_dir)
+    logger.info("Stage window: %s -> %s", start_stage, stop_stage)
+    logger.info("=" * 60)
+
+    state = (
+        PipelineState(work_dir=config.work_dir)
+        if start_stage == "ingest"
+        else load_state_before_stage(config.work_dir, stage=start_stage, config=config)
+    )
+
+    final_outputs: list[Path] = []
+
+    if start_stage == "ingest":
+        state = _run_ingest_stage(config, state)
+        _write_stage_inspection_if_requested(config, stage="ingest")
+        if stop_stage == "ingest":
+            return final_outputs
+
+    if start_stage in {"ingest", "clip-selection"}:
+        state = _run_clip_selection_stage(config, state)
+        _write_stage_inspection_if_requested(config, stage="clip-selection")
+        if stop_stage == "clip-selection":
+            return final_outputs
+
+    if start_stage in {"ingest", "clip-selection", "hook-detection"}:
+        state = _run_hook_stage(config, state)
+        _write_stage_inspection_if_requested(config, stage="hook-detection")
+        if stop_stage == "hook-detection":
+            return final_outputs
+
+    if start_stage in {"ingest", "clip-selection", "hook-detection", "content-pruning"}:
+        state = _run_pruning_stage(config, state)
+        _write_stage_inspection_if_requested(config, stage="content-pruning")
+        if stop_stage == "content-pruning":
+            return final_outputs
+
+    if start_stage in {
+        "ingest",
+        "clip-selection",
+        "hook-detection",
+        "content-pruning",
+        "layout-vision",
+    }:
+        state = _run_layout_stage(config, state)
+        _write_stage_inspection_if_requested(config, stage="layout-vision")
+        if stop_stage == "layout-vision":
+            return final_outputs
+
+    if start_stage in {
+        "ingest",
+        "clip-selection",
+        "hook-detection",
+        "content-pruning",
+        "layout-vision",
+        "render",
+    }:
+        final_outputs = _run_render_stage(config, state)
+        _write_stage_inspection_if_requested(config, stage="render")
+
     logger.info("=" * 60)
     logger.info("PIPELINE COMPLETE - %d shorts generated:", len(final_outputs))
     for p in final_outputs:
         logger.info("  -> %s", p)
     logger.info("=" * 60)
-
     return final_outputs

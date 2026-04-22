@@ -9,7 +9,17 @@ This is the single reference for how Humeo reads configuration from the environm
 
 Copy `.env.example` to `.env` and fill in secrets. `.env` is gitignored.
 
-## Gemini (clip selection)
+## Stage LLMs (stages 2 / 2.25 / 2.5 / 3)
+
+These stages are provider-swappable through `src/humeo/llm_provider.py`.
+
+| Variable | Default | Meaning |
+|----------|---------|---------|
+| **`HUMEO_LLM_PROVIDER`** | `gemini` | One of `gemini`, `openai`, or `azure`. |
+| **`HUMEO_LLM_MODEL`** | *(unset)* | Text-stage model or deployment id for clip selection, hook detection, and content pruning. |
+| **`HUMEO_LLM_VISION_MODEL`** | *(unset)* | Optional separate model or deployment id for stage 3 layout vision. Falls back to `HUMEO_LLM_MODEL`. |
+
+## Gemini (legacy envs still supported)
 
 Clip selection uses the **Google Gen AI SDK for Python** (`google-genai` package): `from google import genai`. Upstream docs: [python-genai](https://github.com/googleapis/python-genai) (Gemini Developer API and Vertex AI). The older `google-generativeai` package is not used.
 
@@ -18,12 +28,24 @@ Clip selection uses the **Google Gen AI SDK for Python** (`google-genai` package
 | **`GOOGLE_API_KEY`** | **Preferred** API key for Gemini. Get a key from [Google AI Studio](https://aistudio.google.com/apikey). The SDK also recognizes **`GEMINI_API_KEY`** in the environment when using `genai.Client()` without an explicit key. |
 | **`GEMINI_API_KEY`** | Fallback only if `GOOGLE_API_KEY` is unset (same kind of key as AI Studio). |
 
-Gemini **must** use an explicit API key for clip selection. Without it, clients may fall back to Application Default Credentials and return `403 ACCESS_TOKEN_SCOPE_INSUFFICIENT`.
+Gemini **must** use an explicit API key for the stage LLMs. Without it, clients may fall back to Application Default Credentials and return `403 ACCESS_TOKEN_SCOPE_INSUFFICIENT`.
 
 | Variable | Default | Meaning |
 |----------|---------|---------|
-| **`GEMINI_MODEL`** | `gemini-3.1-flash-lite-preview` | Gemini model id for clip selection. Override per run with `--gemini-model`. |
-| **`GEMINI_VISION_MODEL`** | *(unset)* | Optional separate model id for per-keyframe layout + bbox. If unset, the effective clip-selection model is used. Override per run with `--gemini-vision-model`. |
+| **`GEMINI_MODEL`** | `gemini-3.1-flash-lite-preview` | Legacy Gemini text-model env. Used when `HUMEO_LLM_PROVIDER=gemini` and `HUMEO_LLM_MODEL` is unset. |
+| **`GEMINI_VISION_MODEL`** | *(unset)* | Legacy Gemini vision-model env. Used when `HUMEO_LLM_PROVIDER=gemini` and `HUMEO_LLM_VISION_MODEL` is unset. |
+
+## OpenAI / Azure OpenAI
+
+| Variable | Used for |
+|----------|----------|
+| **`OPENAI_API_KEY`** | Required when `HUMEO_LLM_PROVIDER=openai`. |
+| **`OPENAI_BASE_URL`** | Optional OpenAI-compatible gateway URL when `HUMEO_LLM_PROVIDER=openai`. |
+| **`AZURE_OPENAI_API_KEY`** | Required when `HUMEO_LLM_PROVIDER=azure`. |
+| **`AZURE_OPENAI_BASE_URL`** / **`AZURE_BASE_URL`** | Preferred Azure OpenAI-compatible base URL. If this is set, Humeo uses the plain OpenAI client against that base URL and ignores endpoint-style Azure settings. |
+| **`AZURE_OPENAI_ENDPOINT`** / **`AZURE_ENDPOINT`** | Endpoint-style Azure resource URL. Used only when no Azure base URL is set. |
+| **`AZURE_OPENAI_DEPLOYMENT`** / **`AZURE_DEPLOYMENT`** | Optional Azure deployment name for endpoint-style Azure resources. If `HUMEO_LLM_MODEL` is unset, this value is used as the model fallback. |
+| **`AZURE_OPENAI_API_VERSION`** / **`OPENAI_API_VERSION`** | Required only for endpoint-style Azure resources. Not required when `AZURE_OPENAI_BASE_URL` / `AZURE_BASE_URL` is used. |
 
 ## Clip selection prompts (Jinja2)
 
@@ -37,7 +59,7 @@ Clip duration bounds for the LLM match `MIN_CLIP_DURATION_SEC` / `MAX_CLIP_DURAT
 
 ### Per-clip layout (product pipeline)
 
-After clip selection, the pipeline extracts one keyframe per clip and calls **Gemini vision** with a fixed JSON schema (`layout`, `person_bbox`, `chart_bbox`, `reason`). That produces a full **`LayoutInstruction`** per clip (including optional normalized split regions). Cached artifacts: **`layout_vision.meta.json`** and **`layout_vision.json`** under the work directory. Use **`--force-layout-vision`** to ignore that cache. Full detail: **`docs/PIPELINE.md`**.
+After clip selection, the pipeline samples multiple frames per clip and calls the configured multimodal model with a fixed JSON schema (`layout`, `person_bbox`, `chart_bbox`, `reason`). That produces a full **`LayoutInstruction`** per clip (including optional normalized split regions). Cached artifacts: **`layout_vision.meta.json`** and **`layout_vision.json`** under the work directory. Use **`--force-layout-vision`** to ignore that cache. Full detail: **`docs/PIPELINE.md`**.
 
 ## OpenAI (transcription only)
 
@@ -50,23 +72,23 @@ Transcription output is always normalized to **`transcript.json`** in the work d
 
 ## Clip selection cache (LLM skip)
 
-When **`clips.json`** and **`clips.meta.json`** exist under the work directory and the meta file’s **`transcript_sha256`** matches the current **`transcript.json`** (canonical JSON hash), and **`gemini_model`** matches, the pipeline **skips** the clip-selection call and reuses **`clips.json`**.
+When **`clips.json`** and **`clips.meta.json`** exist under the work directory and the stored **LLM identity** still matches the current provider/model transport, the pipeline **skips** the clip-selection call and reuses **`clips.json`**.
 
 | Artifact | Role |
 |----------|------|
-| **`clips.meta.json`** | Version (v2 = Gemini-only), transcript hash, `gemini_model` |
-| **`clip_selection_raw.json`** | Exact raw JSON string returned by Gemini (debug / audit) |
+| **`clips.meta.json`** | Version (v4 = provider-aware), transcript hash, `llm`, ranking policy fingerprint |
+| **`clip_selection_raw.json`** | Exact raw JSON string returned by the LLM (debug / audit) |
 
 Use **`--force-clip-selection`** to always re-run. Legacy v1 meta files that used OpenAI for clip selection are treated as **cache miss**.
 
-## Layout vision cache (Gemini multimodal)
+## Layout vision cache (multimodal LLM)
 
-When **`layout_vision.json`** and **`layout_vision.meta.json`** exist and **`transcript_sha256`**, **`clips_sha256`**, and **`gemini_vision_model`** match the current run, the pipeline **skips** per-keyframe vision calls.
+When **`layout_vision.json`** and **`layout_vision.meta.json`** exist and the cached **LLM identity** still matches the current run, the pipeline **skips** layout vision calls.
 
 | Artifact | Role |
 |----------|------|
-| **`layout_vision.meta.json`** | Transcript hash, SHA256 of **`clips.json`**, vision model id |
-| **`layout_vision.json`** | Per-clip `instruction` (serialized `LayoutInstruction`) + `raw` (Gemini JSON or error) |
+| **`layout_vision.meta.json`** | Transcript hash, SHA256 of **`clips.json`**, `llm`, layout policy version |
+| **`layout_vision.json`** | Per-clip `instruction` (serialized `LayoutInstruction`) + `raw` (model JSON or error) |
 
 Use **`--force-layout-vision`** to always re-run. Changing **`clips.json`** (any byte) invalidates the layout cache.
 
@@ -91,8 +113,9 @@ After a successful download, yt-dlp writes **`source.info.json`** next to **`sou
 
 | Flag | Env equivalent / notes |
 |------|-------------------------|
-| `--gemini-model` | `GEMINI_MODEL` |
-| `--gemini-vision-model` | `GEMINI_VISION_MODEL` |
+| `--llm-provider` | `HUMEO_LLM_PROVIDER` |
+| `--llm-model` | `HUMEO_LLM_MODEL` (`--gemini-model` still works as a legacy alias) |
+| `--llm-vision-model` | `HUMEO_LLM_VISION_MODEL` (`--gemini-vision-model` still works as a legacy alias) |
 | `--cache-root` | `HUMEO_CACHE_ROOT` |
 | `--no-video-cache` | Disables per-video cache dirs |
 | `--force-clip-selection` | Ignores clip-selection cache |

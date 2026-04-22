@@ -1,9 +1,4 @@
-"""
-Step 2 - Clip Selection: Gemini-only LLM for viral clip identification.
-
-Uses the unified ``google-genai`` SDK (``from google import genai``). See:
-https://github.com/googleapis/python-genai
-"""
+"""Step 2 - Clip selection via a swappable structured LLM provider."""
 
 from __future__ import annotations
 
@@ -13,19 +8,22 @@ import time
 from pathlib import Path
 from typing import Callable, TypeVar
 
-from google import genai
+from pydantic import BaseModel, Field
 
-from humeo.gemini_generate import gemini_generate_config
-
-from humeo_core.schemas import Clip, ClipPlan
+from humeo_core.schemas import Clip, ClipPlan, RuleScore
 
 from humeo.config import (
-    GEMINI_MODEL,
     MAX_CLIP_DURATION_SEC,
     MIN_CLIP_DURATION_SEC,
+    PipelineConfig,
     TARGET_CLIP_COUNT,
 )
-from humeo.env import resolve_gemini_api_key
+from humeo.llm_provider import (
+    StructuredLlmRequest,
+    call_structured_llm,
+    resolved_llm_provider,
+    resolved_text_model,
+)
 from humeo.prompt_loader import clip_selection_prompts
 
 logger = logging.getLogger(__name__)
@@ -55,6 +53,47 @@ DEFAULT_MAX_KEPT = 8
 # "the same five most-obvious clips every run". Still well below 1.0 so we
 # do not get word-salad IDs or timestamps.
 DEFAULT_CANDIDATE_TEMPERATURE = 0.7
+
+# Operator-visible ranking contract. If these weights change, the kept set
+# can change even when Gemini returns the same raw candidate pool, so the
+# clip-selection cache must stop trusting the old `clips.json`.
+CLIP_SELECTION_POLICY_VERSION = 1
+CLIP_SELECTION_RULE_WEIGHTS: dict[str, float] = {
+    "hook_strength": 0.30,
+    "counterintuitive_claim": 0.30,
+    "chart_reference": 0.20,
+    "self_contained": 0.15,
+    "named_entity": 0.05,
+}
+
+
+class _ClipSelectionCandidate(BaseModel):
+    """Structured Gemini candidate before we coerce it to the shared Clip schema."""
+
+    clip_id: str
+    topic: str
+    start_time_sec: float = Field(ge=0.0)
+    end_time_sec: float = Field(gt=0.0)
+    viral_hook: str = ""
+    virality_score: float = Field(default=0.0, ge=0.0, le=1.0)
+    transcript: str = ""
+    suggested_overlay_title: str = ""
+    hook_start_sec: float | None = None
+    hook_end_sec: float | None = None
+    trim_start_sec: float = Field(default=0.0, ge=0.0)
+    trim_end_sec: float = Field(default=0.0, ge=0.0)
+    shorts_title: str = ""
+    description: str = ""
+    hashtags: list[str] = Field(default_factory=list)
+    layout_hint: str | None = None
+    needs_review: bool = False
+    review_reason: str = ""
+    selection_reason: str = ""
+    rule_scores: list[RuleScore] = Field(default_factory=list)
+
+
+class ClipSelectionResponse(BaseModel):
+    clips: list[_ClipSelectionCandidate] = Field(default_factory=list)
 
 
 def _retry_llm(name: str, fn: Callable[[], T], attempts: int = LLM_MAX_ATTEMPTS) -> T:
@@ -97,6 +136,48 @@ def build_prompt(
         count=candidate_count,
     )
     return system, user
+
+
+def _composite_rule_score(rule_scores: list[RuleScore]) -> float | None:
+    if not rule_scores:
+        return None
+    by_id = {r.rule_id: max(0.0, min(1.0, float(r.score))) for r in rule_scores}
+    total_weight = sum(CLIP_SELECTION_RULE_WEIGHTS.values())
+    if total_weight <= 0.0:
+        return None
+    composite = sum(
+        CLIP_SELECTION_RULE_WEIGHTS[rule_id] * by_id.get(rule_id, 0.0)
+        for rule_id in CLIP_SELECTION_RULE_WEIGHTS
+    )
+    return round(composite / total_weight, 4)
+
+
+def _default_selection_reason(rule_scores: list[RuleScore], score: float) -> str:
+    if not rule_scores:
+        return f"Fallback virality_score {score:.2f} (no structured rule scores provided)."
+    parts = []
+    by_id = {r.rule_id: r for r in rule_scores}
+    for rule_id, weight in CLIP_SELECTION_RULE_WEIGHTS.items():
+        item = by_id.get(rule_id)
+        if item is None:
+            parts.append(f"{weight:.2f}*{rule_id}=0.00")
+            continue
+        parts.append(f"{weight:.2f}*{rule_id}={item.score:.2f}")
+    return f"Composite {score:.2f} from " + ", ".join(parts)
+
+
+def _candidate_to_clip(candidate: _ClipSelectionCandidate) -> Clip:
+    payload = candidate.model_dump()
+    payload.pop("clip_id", None)
+    score = _composite_rule_score(candidate.rule_scores)
+    final_score = candidate.virality_score if score is None else score
+    selection_reason = candidate.selection_reason or _default_selection_reason(
+        candidate.rule_scores, final_score
+    )
+    payload["clip_id"] = candidate.clip_id
+    payload["virality_score"] = final_score
+    payload["selection_reason"] = selection_reason
+    return Clip.model_validate(payload)
 
 
 def rank_and_filter_clips(
@@ -178,6 +259,7 @@ def rank_and_filter_clips(
 def select_clips(
     transcript: dict,
     *,
+    config: PipelineConfig | None = None,
     gemini_model: str | None = None,
     candidate_count: int = DEFAULT_CANDIDATE_COUNT,
     quality_threshold: float = DEFAULT_QUALITY_THRESHOLD,
@@ -186,52 +268,56 @@ def select_clips(
     temperature: float = DEFAULT_CANDIDATE_TEMPERATURE,
 ) -> tuple[list[Clip], str]:
     """
-    Call Gemini to select clips. Returns ``(clips, raw_json)`` for caching / debugging.
+    Call the configured LLM to select clips. Returns ``(clips, raw_json)`` for caching / debugging.
 
     The returned clip list has already been ranked + filtered by
     :func:`rank_and_filter_clips`. ``raw_json`` is the untouched LLM
     response so the cache artifact reflects the entire candidate pool for
     audit / re-ranking without another LLM call.
-
-    Uses ``google.genai.Client`` and ``GenerateContentConfig`` (see Google
-    Gen AI SDK for Python).
     """
-    model_name = (gemini_model or GEMINI_MODEL).strip()
+    provider = resolved_llm_provider(config)
+    model_name = resolved_text_model(config, model_override=gemini_model)
     system_prompt, user_text = build_prompt(
         transcript, candidate_count=candidate_count
     )
 
-    client = genai.Client(api_key=resolve_gemini_api_key())
-
-    def _call() -> str:
+    def _call() -> tuple[str, ClipSelectionResponse | None]:
         logger.info(
-            "Gemini clip selection (model=%s, candidate_pool=%d, temp=%.2f)...",
+            "%s clip selection (model=%s, candidate_pool=%d, temp=%.2f)...",
+            provider,
             model_name,
             candidate_count,
             temperature,
         )
-        response = client.models.generate_content(
-            model=model_name,
-            contents=user_text,
-            config=gemini_generate_config(
+        response = call_structured_llm(
+            StructuredLlmRequest(
+                stage_name="clip selection",
+                model=model_name,
                 system_instruction=system_prompt,
+                user_text=user_text,
                 temperature=temperature,
-                response_mime_type="application/json",
+                response_schema=ClipSelectionResponse,
             ),
+            provider=provider,
         )
-        if not response.text:
-            raise RuntimeError("Gemini returned empty response text")
-        return response.text
+        raw = response.raw_text
+        parsed = response.parsed if isinstance(response.parsed, ClipSelectionResponse) else None
+        if not raw and parsed is None:
+            raise RuntimeError("LLM returned neither text nor parsed response for clip selection")
+        if not raw and parsed is not None:
+            raw = parsed.model_dump_json()
+        assert raw is not None
+        return raw, parsed
 
-    raw = _retry_llm("Gemini clip selection", _call)
-    candidates = _parse_clips(raw)
-    # The ranker can only backfill from the pool Gemini returned. If Gemini
+    raw, parsed = _retry_llm("Clip selection", _call)
+    candidates = _parse_clips(raw, parsed=parsed)
+    # The ranker can only backfill from the pool the model returned. If it
     # under-delivered (e.g. returned 2 of a requested 12), the min_kept floor
     # is unenforceable -- warn loudly so we do not silently ship fewer shorts
     # than the caller expected.
     if len(candidates) < min_kept:
         logger.warning(
-            "Clip selection: Gemini returned only %d candidates (requested %d, floor %d). "
+            "Clip selection: LLM returned only %d candidates (requested %d, floor %d). "
             "Output will be capped at %d shorts -- check prompt or transcript length.",
             len(candidates),
             candidate_count,
@@ -240,7 +326,7 @@ def select_clips(
         )
     elif len(candidates) < candidate_count:
         logger.info(
-            "Clip selection: Gemini returned %d of %d requested candidates "
+            "Clip selection: LLM returned %d of %d requested candidates "
             "(pool still >= floor of %d).",
             len(candidates),
             candidate_count,
@@ -255,29 +341,48 @@ def select_clips(
     return clips, raw
 
 
-def _parse_clips(raw_json: str) -> list[Clip]:
+def _parse_clips(
+    raw_json: str,
+    *,
+    parsed: ClipSelectionResponse | None = None,
+) -> list[Clip]:
     """Parse and validate the LLM's JSON response into Clip objects."""
-    data = json.loads(raw_json)
-    clips_data = data.get("clips", data) if isinstance(data, dict) else data
+    if parsed is not None:
+        candidates = parsed.clips
+    else:
+        data = json.loads(raw_json)
+        clips_data = data.get("clips", data) if isinstance(data, dict) else data
+        candidates = [_ClipSelectionCandidate.model_validate(item) for item in clips_data]
 
     clips: list[Clip] = []
-    for item in clips_data:
-        payload = dict(item)
-        payload.pop("duration_sec", None)
-        clip = Clip.model_validate(payload)
+    for candidate in candidates:
+        clip = _candidate_to_clip(candidate)
 
         actual_dur = clip.end_time_sec - clip.start_time_sec
-        stated_dur = item.get("duration_sec")
+        stated_dur = getattr(candidate, "duration_sec", None)
         if stated_dur is not None and abs(actual_dur - float(stated_dur)) > 1.0:
             logger.warning(
                 "Clip %s: stated duration %.1fs doesn't match (%.1f-%.1f = %.1f).",
-                clip.clip_id, float(stated_dur),
-                clip.start_time_sec, clip.end_time_sec, actual_dur,
+                clip.clip_id,
+                float(stated_dur),
+                clip.start_time_sec,
+                clip.end_time_sec,
+                actual_dur,
             )
         clips.append(clip)
 
     logger.info("Parsed %d clips from LLM response", len(clips))
     return clips
+
+
+def load_candidate_pool_from_raw_response(raw_json: str) -> list[Clip]:
+    """Parse the cached raw LLM response into a candidate pool.
+
+    This is used when transcript/model inputs still match but the ranking
+    policy changed; re-ranking the cached pool is much cheaper than another
+    LLM call.
+    """
+    return _parse_clips(raw_json)
 
 
 def save_clips(clips: list[Clip], output_path: Path) -> Path:

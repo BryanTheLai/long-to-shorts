@@ -1,8 +1,19 @@
 """layout_vision parsing (no API calls)."""
 
 import math
+from types import SimpleNamespace
 
-from humeo.layout_vision import _face_center_x, _instruction_from_gemini_json
+from humeo.layout_vision import (
+    SampledFrame,
+    _GeminiMultiFrameResponse,
+    _VISION_HTTP_TIMEOUT_MS,
+    _VISION_RETRY_ATTEMPTS,
+    _call_gemini_vision,
+    _face_center_x,
+    infer_layout_instructions,
+    _instruction_from_gemini_json,
+)
+from humeo_core.primitives.layouts import plan_layout
 from humeo_core.schemas import BoundingBox, LayoutKind
 
 
@@ -112,3 +123,235 @@ def test_face_center_helper_unit():
     # Face suspiciously wide (> 40% of frame): ignore.
     wide = BoundingBox(x1=0.10, y1=0.10, x2=0.60, y2=0.95)
     assert _face_center_x(wide, body) is None
+
+
+def test_instruction_from_gemini_json_accepts_0_to_1000_bboxes():
+    data = {
+        "layout": "split_chart_person",
+        "person_bbox": {"x1": 620, "y1": 50, "x2": 980, "y2": 950},
+        "chart_bbox": {"x1": 20, "y1": 50, "x2": 580, "y2": 920},
+        "reason": "webinar",
+    }
+    warnings: list[str] = []
+    instr = _instruction_from_gemini_json("005", data, warnings=warnings)
+    assert instr.layout == LayoutKind.SPLIT_CHART_PERSON
+    assert instr.split_chart_region is not None
+    assert instr.split_chart_region.x2 == 0.58
+    assert any("normalized gemini_1000" in warning for warning in warnings)
+
+
+def test_split_chart_person_face_bbox_emits_render_friendly_regions():
+    data = {
+        "layout": "split_chart_person",
+        "person_bbox": {"x1": 0.59, "y1": 0.072, "x2": 1.00, "y2": 1.00},
+        "face_bbox": {"x1": 0.72, "y1": 0.082, "x2": 0.86, "y2": 0.48},
+        "chart_bbox": {"x1": 0.021, "y1": 0.028, "x2": 0.584, "y2": 0.722},
+        "reason": "chart left, speaker right",
+    }
+    instr = _instruction_from_gemini_json("001", data)
+
+    assert instr.layout == LayoutKind.SPLIT_CHART_PERSON
+    assert instr.split_person_region is not None
+    assert instr.split_person_region.y1 <= 0.001
+    assert instr.split_person_region.y2 < 0.85
+    assert instr.top_band_ratio < 0.45
+
+
+def test_split_chart_person_render_friendly_regions_reduce_crop_pressure():
+    data = {
+        "layout": "split_chart_person",
+        "person_bbox": {"x1": 0.59, "y1": 0.072, "x2": 1.00, "y2": 1.00},
+        "face_bbox": {"x1": 0.72, "y1": 0.082, "x2": 0.86, "y2": 0.48},
+        "chart_bbox": {"x1": 0.021, "y1": 0.028, "x2": 0.584, "y2": 0.722},
+        "reason": "chart left, speaker right",
+    }
+    instr = _instruction_from_gemini_json("001", data)
+    fg = plan_layout(instr, out_w=1080, out_h=1920, src_w=1920, src_h=1080).filtergraph
+
+    assert "scale=1080:730" in fg
+    assert "scale=1080:1190" in fg
+    assert "crop=794:860:1126:0" in fg
+
+
+def test_zoom_call_center_uses_subject_width_not_hard_floor():
+    data = {
+        "layout": "zoom_call_center",
+        "person_bbox": {"x1": 0.10, "y1": 0.10, "x2": 0.75, "y2": 0.95},
+        "face_bbox": {"x1": 0.22, "y1": 0.15, "x2": 0.36, "y2": 0.35},
+        "reason": "wide already-close subject",
+    }
+    instr = _instruction_from_gemini_json("009", data)
+    assert instr.layout == LayoutKind.ZOOM_CALL_CENTER
+    assert instr.zoom == 1.0
+
+
+def test_call_gemini_vision_uses_bounded_http_retry_budget(monkeypatch, tmp_path):
+    img = tmp_path / "frame.jpg"
+    img.write_bytes(b"\xff\xd8\xff\xd9")
+    frame = SampledFrame(
+        frame_id="f0",
+        timestamp_sec=1.23,
+        path=str(img),
+        width=1920,
+        height=1080,
+    )
+    seen: dict[str, object] = {}
+    parsed_payload = _GeminiMultiFrameResponse.model_validate(
+        {
+            "frames": [
+                {
+                    "frame_index": 0,
+                    "timestamp_sec": 1.23,
+                    "layout": "sit_center",
+                    "reason": "ok",
+                }
+            ],
+            "merged": {
+                "layout": "sit_center",
+                "reason": "ok",
+            },
+        }
+    )
+
+    def fake_call(request, *, provider):
+        seen["request"] = request
+        seen["provider"] = provider
+        return SimpleNamespace(raw_text=parsed_payload.model_dump_json(), parsed=parsed_payload)
+
+    monkeypatch.setattr("humeo.layout_vision.call_structured_llm", fake_call)
+
+    raw, parsed = _call_gemini_vision([frame], "gemini-3-flash-preview", provider="gemini")
+
+    assert parsed.merged.layout == "sit_center"
+    assert raw
+    request = seen["request"]
+    assert seen["provider"] == "gemini"
+    assert request.timeout_ms == _VISION_HTTP_TIMEOUT_MS
+    assert request.max_retries == _VISION_RETRY_ATTEMPTS
+    assert request.response_schema is _GeminiMultiFrameResponse
+    assert len(request.images) == 1
+
+
+def test_infer_layout_instructions_records_request_budget_on_failure(monkeypatch, tmp_path):
+    source = tmp_path / "source.mp4"
+    source.write_bytes(b"fake")
+
+    frame = SampledFrame(
+        frame_id="f0",
+        timestamp_sec=1.23,
+        path=str(tmp_path / "frame.jpg"),
+        width=1920,
+        height=1080,
+    )
+
+    clip = SimpleNamespace(
+        clip_id="001",
+        start_time_sec=0.0,
+        end_time_sec=10.0,
+        keep_ranges_sec=[(0.0, 10.0)],
+    )
+
+    monkeypatch.setattr(
+        "humeo.layout_vision._sample_clip_frames",
+        lambda *args, **kwargs: ([frame], []),
+    )
+    monkeypatch.setattr(
+        "humeo.layout_vision._call_gemini_vision",
+        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("boom")),
+    )
+
+    instructions, payload = infer_layout_instructions(
+        source,
+        [clip],
+        gemini_vision_model="gemini-3.1-flash-lite-preview",
+        provider="gemini",
+        keyframes_root=tmp_path / "keyframes",
+    )
+
+    assert instructions["001"].layout == LayoutKind.SIT_CENTER
+    clip_payload = payload["001"]
+    assert clip_payload["raw"]["request"] == {
+        "provider": "gemini",
+        "model": "gemini-3.1-flash-lite-preview",
+        "frame_count": 1,
+        "timeout_ms": _VISION_HTTP_TIMEOUT_MS,
+        "max_retries": _VISION_RETRY_ATTEMPTS,
+    }
+    assert "Layout vision model failed" in clip_payload["warnings"][0]
+
+
+def test_infer_layout_instructions_uses_layout_hint_when_sampling_unavailable(monkeypatch, tmp_path):
+    source = tmp_path / "source.mp4"
+    source.write_bytes(b"fake")
+
+    clip = SimpleNamespace(
+        clip_id="001",
+        start_time_sec=0.0,
+        end_time_sec=10.0,
+        keep_ranges_sec=[(0.0, 10.0)],
+        layout_hint=LayoutKind.SPLIT_CHART_PERSON,
+        layout=None,
+    )
+
+    monkeypatch.setattr(
+        "humeo.layout_vision._sample_clip_frames",
+        lambda *args, **kwargs: ([], ["OpenCV unavailable; cannot sample layout frames (No module named 'cv2')."]),
+    )
+
+    instructions, payload = infer_layout_instructions(
+        source,
+        [clip],
+        gemini_vision_model="gpt-5.4",
+        provider="azure",
+        keyframes_root=tmp_path / "keyframes",
+    )
+
+    assert instructions["001"].layout == LayoutKind.SPLIT_CHART_PERSON
+    clip_payload = payload["001"]
+    assert clip_payload["instruction"]["layout"] == "split_chart_person"
+    assert clip_payload["raw"]["layout"] == "split_chart_person"
+    assert clip_payload["warnings"][-1] == "No sampled frames; defaulted to split_chart_person."
+
+
+def test_infer_layout_instructions_uses_layout_hint_when_vision_call_fails(monkeypatch, tmp_path):
+    source = tmp_path / "source.mp4"
+    source.write_bytes(b"fake")
+
+    frame = SampledFrame(
+        frame_id="f0",
+        timestamp_sec=1.23,
+        path=str(tmp_path / "frame.jpg"),
+        width=1920,
+        height=1080,
+    )
+
+    clip = SimpleNamespace(
+        clip_id="001",
+        start_time_sec=0.0,
+        end_time_sec=10.0,
+        keep_ranges_sec=[(0.0, 10.0)],
+        layout_hint=LayoutKind.SPLIT_CHART_PERSON,
+        layout=None,
+    )
+
+    monkeypatch.setattr(
+        "humeo.layout_vision._sample_clip_frames",
+        lambda *args, **kwargs: ([frame], []),
+    )
+    monkeypatch.setattr(
+        "humeo.layout_vision._call_gemini_vision",
+        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("boom")),
+    )
+
+    instructions, payload = infer_layout_instructions(
+        source,
+        [clip],
+        gemini_vision_model="gpt-5.4",
+        provider="azure",
+        keyframes_root=tmp_path / "keyframes",
+    )
+
+    assert instructions["001"].layout == LayoutKind.SPLIT_CHART_PERSON
+    clip_payload = payload["001"]
+    assert clip_payload["instruction"]["layout"] == "split_chart_person"
+    assert clip_payload["raw"]["request"]["provider"] == "azure"

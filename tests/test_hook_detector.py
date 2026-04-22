@@ -14,7 +14,8 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from types import SimpleNamespace
+from unittest.mock import patch
 
 import pytest
 
@@ -231,15 +232,13 @@ def test_parse_decisions_skips_malformed_array_items():
 # ---------------------------------------------------------------------------
 
 
-@patch("humeo.hook_detector.genai.Client")
-def test_request_hook_decisions_calls_gemini(mock_client_cls, monkeypatch):
-    monkeypatch.setenv("GOOGLE_API_KEY", "test-key")
-    mock_inst = MagicMock()
-    mock_client_cls.return_value = mock_inst
-    mock_inst.models.generate_content.return_value = MagicMock(
-        text=json.dumps(
+@patch("humeo.hook_detector.call_structured_llm")
+def test_request_hook_decisions_calls_provider_layer(mock_call):
+    mock_call.return_value = SimpleNamespace(
+        raw_text=json.dumps(
             {"hooks": [{"clip_id": "001", "hook_start_sec": 4.0, "hook_end_sec": 7.0}]}
-        )
+        ),
+        parsed=None,
     )
     clip = _clip("001", end=200.0)
     transcript = _transcript_for(100.0, 200.0)
@@ -248,11 +247,12 @@ def test_request_hook_decisions_calls_gemini(mock_client_cls, monkeypatch):
         [clip], transcript, gemini_model="gemini-x"
     )
 
-    mock_client_cls.assert_called_once_with(api_key="test-key")
-    mock_inst.models.generate_content.assert_called_once()
-    call_kwargs = mock_inst.models.generate_content.call_args.kwargs
-    assert call_kwargs["model"] == "gemini-x"
-    assert "clip_id: 001" in call_kwargs["contents"]
+    mock_call.assert_called_once()
+    request = mock_call.call_args.args[0]
+    assert request.model == "gemini-x"
+    assert request.stage_name == "hook detection"
+    assert "clip_id: 001" in request.user_text
+    assert mock_call.call_args.kwargs["provider"] == "gemini"
     assert len(decisions) == 1
     assert json.loads(raw)["hooks"][0]["clip_id"] == "001"
 
@@ -262,11 +262,9 @@ def test_request_hook_decisions_calls_gemini(mock_client_cls, monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-def _mock_gemini_ok(mock_client_cls, *, hs: float = 4.0, he: float = 7.0):
-    mock_inst = MagicMock()
-    mock_client_cls.return_value = mock_inst
-    mock_inst.models.generate_content.return_value = MagicMock(
-        text=json.dumps(
+def _mock_gemini_ok(mock_call, *, hs: float = 4.0, he: float = 7.0):
+    mock_call.return_value = SimpleNamespace(
+        raw_text=json.dumps(
             {
                 "hooks": [
                     {
@@ -278,17 +276,15 @@ def _mock_gemini_ok(mock_client_cls, *, hs: float = 4.0, he: float = 7.0):
                     }
                 ]
             }
-        )
+        ),
+        parsed=None,
     )
-    return mock_inst
+    return mock_call
 
 
-@patch("humeo.hook_detector.genai.Client")
-def test_run_stage_writes_artifacts_and_updates_hook(
-    mock_client_cls, cfg, monkeypatch
-):
-    monkeypatch.setenv("GOOGLE_API_KEY", "test-key")
-    _mock_gemini_ok(mock_client_cls, hs=4.0, he=7.0)
+@patch("humeo.hook_detector.call_structured_llm")
+def test_run_stage_writes_artifacts_and_updates_hook(mock_call, cfg):
+    _mock_gemini_ok(mock_call, hs=4.0, he=7.0)
 
     clip = _clip("001", end=200.0, hook_start=0.0, hook_end=3.0)
     transcript = _transcript_for(100.0, 200.0)
@@ -306,10 +302,9 @@ def test_run_stage_writes_artifacts_and_updates_hook(
     assert meta["transcript_sha256"] == "fp-1"
 
 
-@patch("humeo.hook_detector.genai.Client")
-def test_run_stage_cache_hit_skips_llm(mock_client_cls, cfg, monkeypatch):
-    monkeypatch.setenv("GOOGLE_API_KEY", "test-key")
-    mock_inst = _mock_gemini_ok(mock_client_cls, hs=4.0, he=7.0)
+@patch("humeo.hook_detector.call_structured_llm")
+def test_run_stage_cache_hit_skips_llm(mock_call, cfg):
+    mock_inst = _mock_gemini_ok(mock_call, hs=4.0, he=7.0)
 
     clip = _clip("001", end=200.0, hook_start=0.0, hook_end=3.0)
     transcript = _transcript_for(100.0, 200.0)
@@ -317,19 +312,18 @@ def test_run_stage_cache_hit_skips_llm(mock_client_cls, cfg, monkeypatch):
     run_hook_detection_stage(
         cfg.work_dir, [clip], transcript, transcript_fp="fp", config=cfg
     )
-    assert mock_inst.models.generate_content.call_count == 1
+    assert mock_inst.call_count == 1
 
     out2 = run_hook_detection_stage(
         cfg.work_dir, [clip], transcript, transcript_fp="fp", config=cfg
     )
-    assert mock_inst.models.generate_content.call_count == 1  # still 1 -> cache hit
+    assert mock_inst.call_count == 1  # still 1 -> cache hit
     assert out2[0].hook_start_sec == pytest.approx(4.0)
 
 
-@patch("humeo.hook_detector.genai.Client")
-def test_run_stage_force_bypasses_cache(mock_client_cls, cfg, monkeypatch):
-    monkeypatch.setenv("GOOGLE_API_KEY", "test-key")
-    mock_inst = _mock_gemini_ok(mock_client_cls)
+@patch("humeo.hook_detector.call_structured_llm")
+def test_run_stage_force_bypasses_cache(mock_call, cfg):
+    mock_inst = _mock_gemini_ok(mock_call)
 
     clip = _clip("001", end=200.0, hook_start=0.0, hook_end=3.0)
     transcript = _transcript_for(100.0, 200.0)
@@ -337,7 +331,7 @@ def test_run_stage_force_bypasses_cache(mock_client_cls, cfg, monkeypatch):
     run_hook_detection_stage(
         cfg.work_dir, [clip], transcript, transcript_fp="fp", config=cfg
     )
-    assert mock_inst.models.generate_content.call_count == 1
+    assert mock_inst.call_count == 1
 
     cfg_force = PipelineConfig(
         youtube_url=cfg.youtube_url,
@@ -348,12 +342,11 @@ def test_run_stage_force_bypasses_cache(mock_client_cls, cfg, monkeypatch):
     run_hook_detection_stage(
         cfg_force.work_dir, [clip], transcript, transcript_fp="fp", config=cfg_force
     )
-    assert mock_inst.models.generate_content.call_count == 2
+    assert mock_inst.call_count == 2
 
 
-@patch("humeo.hook_detector.genai.Client")
-def test_run_stage_disabled_short_circuits(mock_client_cls, tmp_path, monkeypatch):
-    monkeypatch.setenv("GOOGLE_API_KEY", "test-key")
+@patch("humeo.hook_detector.call_structured_llm")
+def test_run_stage_disabled_short_circuits(mock_call, tmp_path):
     cfg = PipelineConfig(
         youtube_url="https://youtu.be/abc",
         work_dir=tmp_path,
@@ -366,17 +359,14 @@ def test_run_stage_disabled_short_circuits(mock_client_cls, tmp_path, monkeypatc
     )
     assert out[0].hook_start_sec == 0.0
     assert out[0].hook_end_sec == 3.0
-    mock_client_cls.assert_not_called()
+    mock_call.assert_not_called()
     assert not (cfg.work_dir / HOOK_META_FILENAME).exists()
 
 
-@patch("humeo.hook_detector.genai.Client")
-def test_run_stage_swallows_llm_errors(mock_client_cls, cfg, monkeypatch, caplog):
+@patch("humeo.hook_detector.call_structured_llm")
+def test_run_stage_swallows_llm_errors(mock_call, cfg, caplog):
     """A failing LLM call must not kill the pipeline; clips pass through unchanged."""
-    monkeypatch.setenv("GOOGLE_API_KEY", "test-key")
-    mock_inst = MagicMock()
-    mock_client_cls.return_value = mock_inst
-    mock_inst.models.generate_content.side_effect = RuntimeError("boom")
+    mock_call.side_effect = RuntimeError("boom")
 
     clip = _clip("001", end=200.0, hook_start=0.0, hook_end=3.0)
     transcript = _transcript_for(100.0, 200.0)

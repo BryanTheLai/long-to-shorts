@@ -11,7 +11,7 @@ This module is a dedicated Stage 2.25 that runs between clip selection and
 content pruning. For each clip it:
 
 1. Prepares a clip-relative segment listing (same format as pruning uses).
-2. Asks Gemini, in one batched JSON call, to localise the hook sentence of
+2. Asks the configured LLM, in one batched JSON call, to localise the hook sentence of
    every clip with `hook_start_sec`, `hook_end_sec`, `hook_text`, `reason`.
 3. Validates the returned window against the clip's duration + the "real
    hook" heuristics, then overwrites ``clip.hook_start_sec`` /
@@ -20,7 +20,7 @@ content pruning. For each clip it:
 The stage is:
 
 - **Cached** (``hooks.json`` / ``hooks.meta.json`` in ``work_dir``) on
-  ``transcript_sha256 + clips_sha256 + gemini_model``.
+  ``transcript_sha256 + clips_sha256 + llm identity``.
 - **Never fatal.** Any failure (API error, malformed JSON, clip not
   returned, window that still looks like the 0.0-3.0 placeholder) falls
   back to the original clip with its original hook -- pruning will then
@@ -31,7 +31,7 @@ The stage writes three artifacts to ``work_dir`` for audit:
 
 - ``hooks.meta.json``: cache key (version, fingerprints, model).
 - ``hooks.json``: structured per-clip hook windows actually applied.
-- ``hooks_raw.json``: verbatim Gemini response text (for prompt tuning).
+- ``hooks_raw.json``: verbatim LLM response text (for prompt tuning).
 """
 
 from __future__ import annotations
@@ -43,22 +43,26 @@ import time
 from pathlib import Path
 from typing import Any, Callable, TypeVar
 
-from google import genai
 from pydantic import BaseModel, Field, ValidationError
 
 from humeo_core.schemas import Clip
 
-from humeo.config import GEMINI_MODEL, PipelineConfig
+from humeo.config import PipelineConfig
 from humeo.content_pruning import _looks_like_default_hook, _segments_within_clip
-from humeo.env import resolve_gemini_api_key
-from humeo.gemini_generate import gemini_generate_config
+from humeo.llm_provider import (
+    StructuredLlmRequest,
+    call_structured_llm,
+    resolved_llm_identity,
+    resolved_llm_provider,
+    resolved_text_model,
+)
 from humeo.prompt_loader import hook_detection_system_prompt
 
 logger = logging.getLogger(__name__)
 
 T = TypeVar("T")
 
-HOOK_META_VERSION = 1
+HOOK_META_VERSION = 2
 HOOK_META_FILENAME = "hooks.meta.json"
 HOOK_ARTIFACT_FILENAME = "hooks.json"
 HOOK_RAW_FILENAME = "hooks_raw.json"
@@ -74,7 +78,7 @@ _MAX_HOOK_DURATION_SEC = 10.0
 
 
 class _HookDecision(BaseModel):
-    """Per-clip hook window returned by Gemini (clip-relative seconds)."""
+    """Per-clip hook window returned by the stage LLM (clip-relative seconds)."""
 
     clip_id: str
     hook_start_sec: float = Field(ge=0.0)
@@ -248,10 +252,6 @@ def _clips_fingerprint(clips: list[Clip]) -> str:
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
-def _resolved_gemini_model(config: PipelineConfig) -> str:
-    return (config.gemini_model or GEMINI_MODEL).strip()
-
-
 def _hook_meta(
     *,
     transcript_fp: str,
@@ -262,7 +262,7 @@ def _hook_meta(
         "version": HOOK_META_VERSION,
         "transcript_sha256": transcript_fp,
         "clips_sha256": clips_fp,
-        "gemini_model": _resolved_gemini_model(config),
+        "llm": resolved_llm_identity(config),
     }
 
 
@@ -287,7 +287,7 @@ def _hook_cache_valid(
         return False
     if meta.get("clips_sha256") != clips_fp:
         return False
-    if meta.get("gemini_model") != _resolved_gemini_model(config):
+    if meta.get("llm") != resolved_llm_identity(config):
         return False
     return True
 
@@ -362,7 +362,7 @@ def _write_cache(
 
 
 # ---------------------------------------------------------------------------
-# Gemini call
+# LLM call
 # ---------------------------------------------------------------------------
 
 
@@ -389,12 +389,13 @@ def request_hook_decisions(
     clips: list[Clip],
     transcript: dict,
     *,
+    config: PipelineConfig | None = None,
     gemini_model: str | None = None,
 ) -> tuple[list[_HookDecision], str]:
-    """Ask Gemini to localise the hook sentence for each clip.
+    """Ask the configured LLM to localise the hook sentence for each clip.
 
     Returns ``(decisions, raw_response)``. ``raw_response`` is the literal
-    JSON text from Gemini (cached to ``hooks_raw.json`` for audit). On
+    JSON text from the model (cached to ``hooks_raw.json`` for audit). On
     transport/parse failure this raises; callers should catch and treat as
     no-op.
     """
@@ -404,27 +405,32 @@ def request_hook_decisions(
     system = hook_detection_system_prompt()
     user_text = _build_user_message(clips, transcript)
 
-    model_name = (gemini_model or GEMINI_MODEL).strip()
-    client = genai.Client(api_key=resolve_gemini_api_key())
+    provider = resolved_llm_provider(config)
+    model_name = resolved_text_model(config, model_override=gemini_model)
 
     def _call() -> str:
         logger.info(
-            "Gemini hook detection (model=%s, clips=%d)...", model_name, len(clips)
+            "%s hook detection (model=%s, clips=%d)...",
+            provider,
+            model_name,
+            len(clips),
         )
-        response = client.models.generate_content(
-            model=model_name,
-            contents=user_text,
-            config=gemini_generate_config(
+        response = call_structured_llm(
+            StructuredLlmRequest(
+                stage_name="hook detection",
+                model=model_name,
                 system_instruction=system,
+                user_text=user_text,
                 temperature=0.2,
-                response_mime_type="application/json",
+                response_schema=_HookResponse,
             ),
+            provider=provider,
         )
-        if not response.text:
-            raise RuntimeError("Gemini returned empty response text for hook detection")
-        return response.text
+        if not response.raw_text and response.parsed is None:
+            raise RuntimeError("LLM returned empty response text for hook detection")
+        return response.raw_text or response.parsed.model_dump_json()
 
-    raw = _retry_llm("Gemini hook detection", _call)
+    raw = _retry_llm("Hook detection", _call)
     decisions = _parse_decisions(raw)
     return decisions, raw
 
@@ -473,7 +479,10 @@ def run_hook_detection_stage(
 
     try:
         decisions, raw = request_hook_decisions(
-            clips, transcript, gemini_model=config.gemini_model
+            clips,
+            transcript,
+            config=config,
+            gemini_model=config.gemini_model,
         )
     except Exception as e:  # noqa: BLE001 - pipeline must not die here
         logger.warning(

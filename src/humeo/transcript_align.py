@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from humeo_core.schemas import Clip, ClipSubtitleWords, TranscriptWord
 
+from humeo.render_window import clip_output_duration, source_keep_ranges
+
 # Whisper / WhisperX / OpenAI-normalized segment shapes
 _MAX_WORDS_PER_CUE = 8
 _MAX_CUE_SEC = 4.0
@@ -40,19 +42,21 @@ def _iter_words_from_segments(transcript: dict) -> list[TranscriptWord]:
 
 
 def clip_subtitle_words(transcript: dict, clip: Clip) -> ClipSubtitleWords:
-    """Words overlapping ``clip`` with times shifted to start at 0 (clip-local)."""
-    clip_start = clip.start_time_sec
-    clip_end = clip.end_time_sec
+    """Words overlapping ``clip`` with times shifted to concatenated clip-local output."""
+    keep_ranges = source_keep_ranges(clip)
     words = _iter_words_from_segments(transcript)
     local: list[TranscriptWord] = []
-    for w in words:
-        if w.end_time <= clip_start or w.start_time >= clip_end:
-            continue
-        t0 = max(w.start_time, clip_start) - clip_start
-        t1 = min(w.end_time, clip_end) - clip_start
-        if t1 <= t0:
-            continue
-        local.append(TranscriptWord(word=w.word, start_time=t0, end_time=t1))
+    output_cursor = 0.0
+    for range_start, range_end in keep_ranges:
+        for w in words:
+            if w.end_time <= range_start or w.start_time >= range_end:
+                continue
+            t0 = output_cursor + (max(w.start_time, range_start) - range_start)
+            t1 = output_cursor + (min(w.end_time, range_end) - range_start)
+            if t1 <= t0:
+                continue
+            local.append(TranscriptWord(word=w.word, start_time=t0, end_time=t1))
+        output_cursor += range_end - range_start
 
     if local:
         return ClipSubtitleWords(words=local)
@@ -68,7 +72,7 @@ def _fallback_even_words(clip: Clip) -> list[TranscriptWord]:
     parts = text.split()
     if not parts:
         return []
-    d = clip.duration_sec
+    d = clip_output_duration(clip)
     step = d / len(parts)
     out: list[TranscriptWord] = []
     for i, p in enumerate(parts):

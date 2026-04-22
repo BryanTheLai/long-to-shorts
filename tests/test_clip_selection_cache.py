@@ -1,4 +1,4 @@
-"""Clip selection cache fingerprint (Gemini-only meta)."""
+"""Clip selection cache fingerprint (provider-aware meta)."""
 
 from humeo.clip_selection_cache import (
     CURRENT_META_VERSION,
@@ -22,13 +22,14 @@ def test_transcript_fingerprint_key_order():
     assert transcript_fingerprint(t1) == transcript_fingerprint(t2)
 
 
-def test_cache_roundtrip_v2(tmp_path):
+def test_cache_roundtrip_v4(tmp_path):
     tr = {"segments": []}
     cfg = PipelineConfig(youtube_url="https://youtu.be/x", gemini_model="m")
     write_artifacts(tmp_path, transcript=tr, config=cfg, raw_response='{"clips":[]}')
     meta = load_meta(tmp_path)
     assert meta is not None
     assert meta.get("version") == CURRENT_META_VERSION
+    assert meta["llm"] == {"provider": "gemini", "model": "m"}
     assert cache_valid(meta, transcript_fingerprint(tr), cfg)
 
 
@@ -38,6 +39,19 @@ def test_cache_invalidates_on_model_change(tmp_path):
     write_artifacts(tmp_path, transcript=tr, config=cfg, raw_response="{}")
     meta = load_meta(tmp_path)
     cfg2 = PipelineConfig(youtube_url="https://youtu.be/x", gemini_model="other")
+    assert not cache_valid(meta, transcript_fingerprint(tr), cfg2)
+
+
+def test_cache_invalidates_on_provider_change(tmp_path):
+    tr = {"segments": []}
+    cfg = PipelineConfig(youtube_url="https://youtu.be/x", gemini_model="m")
+    write_artifacts(tmp_path, transcript=tr, config=cfg, raw_response="{}")
+    meta = load_meta(tmp_path)
+    cfg2 = PipelineConfig(
+        youtube_url="https://youtu.be/x",
+        llm_provider="openai",
+        llm_model="gpt-5.4",
+    )
     assert not cache_valid(meta, transcript_fingerprint(tr), cfg2)
 
 

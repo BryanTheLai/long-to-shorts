@@ -22,6 +22,9 @@ TARGET_ASPECT = 9 / 16
 MIN_CLIP_DURATION_SEC = 50
 MAX_CLIP_DURATION_SEC = 90
 TARGET_CLIP_COUNT = 5
+LLM_PROVIDER = (os.environ.get("HUMEO_LLM_PROVIDER") or "gemini").strip().lower() or "gemini"
+LLM_MODEL = (os.environ.get("HUMEO_LLM_MODEL") or "").strip() or None
+LLM_VISION_MODEL = (os.environ.get("HUMEO_LLM_VISION_MODEL") or "").strip() or None
 
 # Gemini model id (override with GEMINI_MODEL in .env or shell). See docs/ENVIRONMENT.md.
 GEMINI_MODEL = (os.environ.get("GEMINI_MODEL") or "gemini-3.1-flash-lite-preview").strip() or "gemini-3.1-flash-lite-preview"
@@ -35,7 +38,7 @@ GEMINI_VISION_MODEL = (os.environ.get("GEMINI_VISION_MODEL") or "").strip() or N
 class PipelineConfig:
     """Runtime configuration for a single pipeline run."""
 
-    youtube_url: str
+    youtube_url: str | None = None
     output_dir: Path = field(default_factory=lambda: Path("output"))
     # None = auto: per-video dir under the cache root (see docs/ENVIRONMENT.md).
     work_dir: Path | None = None
@@ -43,9 +46,16 @@ class PipelineConfig:
     # None = default from env (HUMEO_CACHE_ROOT) or platform default.
     cache_root: Path | None = None
 
-    # None = use GEMINI_MODEL from env / module default (Gemini-only clip selection).
+    # None = use HUMEO_LLM_PROVIDER env / module default.
+    llm_provider: str | None = None
+    # None = use HUMEO_LLM_MODEL env, legacy Gemini aliases, or provider default.
+    llm_model: str | None = None
+    # None = use HUMEO_LLM_VISION_MODEL env or llm_model / legacy aliases.
+    llm_vision_model: str | None = None
+
+    # Legacy aliases kept so old configs/tests keep working. The provider layer
+    # treats these as fallbacks for llm_model / llm_vision_model.
     gemini_model: str | None = None
-    # None = GEMINI_VISION_MODEL env or same as gemini_model (per-keyframe layout + bbox).
     gemini_vision_model: str | None = None
     # When True, always re-run clip-selection LLM (ignore clips.meta.json match).
     force_clip_selection: bool = False
@@ -93,6 +103,12 @@ class PipelineConfig:
     subtitle_margin_v: int = 160
     subtitle_max_words_per_cue: int = 4
     subtitle_max_cue_sec: float = 2.2
+
+    # Stage control / inspection.
+    start_at: str | None = None
+    stop_after: str | None = None
+    inspect_stage: str | None = None
+    clip_id: str | None = None
 
     def __post_init__(self):
         self.output_dir = Path(self.output_dir)

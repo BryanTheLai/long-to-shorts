@@ -16,7 +16,8 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from types import SimpleNamespace
+from unittest.mock import patch
 
 import pytest
 
@@ -83,6 +84,27 @@ def cfg(tmp_path: Path) -> PipelineConfig:
         gemini_model="gemini-test",
         prune_level="balanced",
     )
+
+
+@pytest.fixture(autouse=True)
+def _stub_audio_keep_ranges(monkeypatch):
+    def _apply(clips, *, source_audio_path):
+        updated = []
+        diagnostics = {}
+        for clip in clips:
+            keep_end = max(clip.trim_start_sec, clip.duration_sec - clip.trim_end_sec)
+            updated.append(
+                clip.model_copy(
+                    update={"keep_ranges_sec": [(clip.trim_start_sec, keep_end)]}
+                )
+            )
+            diagnostics[clip.clip_id] = {
+                "audio_backend": {"speech": "stub", "filled_pause": "stub"},
+                "warnings": [],
+            }
+        return updated, diagnostics
+
+    monkeypatch.setattr("humeo.content_pruning.apply_audio_keep_ranges", _apply)
 
 
 # ---------------------------------------------------------------------------
@@ -463,19 +485,17 @@ def test_parse_decisions_skips_malformed_items_in_array():
 # ---------------------------------------------------------------------------
 
 
-@patch("humeo.content_pruning.genai.Client")
-def test_request_prune_decisions_calls_gemini(mock_client_cls, monkeypatch):
-    monkeypatch.setenv("GOOGLE_API_KEY", "test-key")
-    mock_inst = MagicMock()
-    mock_client_cls.return_value = mock_inst
-    mock_inst.models.generate_content.return_value = MagicMock(
-        text=json.dumps(
+@patch("humeo.content_pruning.call_structured_llm")
+def test_request_prune_decisions_calls_provider_layer(mock_call):
+    mock_call.return_value = SimpleNamespace(
+        raw_text=json.dumps(
             {
                 "decisions": [
                     {"clip_id": "001", "trim_start_sec": 2.0, "trim_end_sec": 1.0, "reason": "r"}
                 ]
             }
-        )
+        ),
+        parsed=None,
     )
 
     clip = _clip("001", end=200.0)
@@ -485,11 +505,12 @@ def test_request_prune_decisions_calls_gemini(mock_client_cls, monkeypatch):
         [clip], transcript, level="balanced", gemini_model="gemini-x"
     )
 
-    mock_client_cls.assert_called_once_with(api_key="test-key")
-    mock_inst.models.generate_content.assert_called_once()
-    call_kwargs = mock_inst.models.generate_content.call_args.kwargs
-    assert call_kwargs["model"] == "gemini-x"
-    assert "clip_id: 001" in call_kwargs["contents"]
+    mock_call.assert_called_once()
+    request = mock_call.call_args.args[0]
+    assert request.model == "gemini-x"
+    assert request.stage_name == "content pruning"
+    assert "clip_id: 001" in request.user_text
+    assert mock_call.call_args.kwargs["provider"] == "gemini"
 
     assert len(decisions) == 1
     assert decisions[0].trim_start_sec == pytest.approx(2.0)
@@ -497,14 +518,13 @@ def test_request_prune_decisions_calls_gemini(mock_client_cls, monkeypatch):
 
 
 def test_request_prune_decisions_off_level_is_no_op(monkeypatch):
-    monkeypatch.setenv("GOOGLE_API_KEY", "test-key")
-    with patch("humeo.content_pruning.genai.Client") as mock_client_cls:
+    with patch("humeo.content_pruning.call_structured_llm") as mock_call:
         decisions, raw = request_prune_decisions(
             [_clip()], transcript={"segments": []}, level="off"
         )
         assert decisions == []
         assert json.loads(raw)["decisions"] == []
-        mock_client_cls.assert_not_called()
+        mock_call.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
@@ -512,25 +532,23 @@ def test_request_prune_decisions_off_level_is_no_op(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-def _mock_gemini_ok(mock_client_cls, *, ts: float = 3.0, te: float = 2.0):
-    mock_inst = MagicMock()
-    mock_client_cls.return_value = mock_inst
-    mock_inst.models.generate_content.return_value = MagicMock(
-        text=json.dumps(
+def _mock_gemini_ok(mock_call, *, ts: float = 3.0, te: float = 2.0):
+    mock_call.return_value = SimpleNamespace(
+        raw_text=json.dumps(
             {
                 "decisions": [
                     {"clip_id": "001", "trim_start_sec": ts, "trim_end_sec": te, "reason": "ok"}
                 ]
             }
-        )
+        ),
+        parsed=None,
     )
-    return mock_inst
+    return mock_call
 
 
-@patch("humeo.content_pruning.genai.Client")
-def test_run_stage_writes_artifacts_and_applies_trims(mock_client_cls, cfg, monkeypatch):
-    monkeypatch.setenv("GOOGLE_API_KEY", "test-key")
-    _mock_gemini_ok(mock_client_cls, ts=3.0, te=2.0)
+@patch("humeo.content_pruning.call_structured_llm")
+def test_run_stage_writes_artifacts_and_applies_trims(mock_call, cfg):
+    _mock_gemini_ok(mock_call, ts=3.0, te=2.0)
 
     clip = _clip("001", end=200.0)
     # Empty segments -> snap is a no-op, so this stays a pure plumbing test
@@ -558,35 +576,33 @@ def test_run_stage_writes_artifacts_and_applies_trims(mock_client_cls, cfg, monk
     assert meta["transcript_sha256"] == "fp-1"
 
 
-@patch("humeo.content_pruning.genai.Client")
-def test_run_stage_is_cached_on_second_call(mock_client_cls, cfg, monkeypatch):
-    monkeypatch.setenv("GOOGLE_API_KEY", "test-key")
-    mock_inst = _mock_gemini_ok(mock_client_cls, ts=3.0, te=2.0)
+@patch("humeo.content_pruning.call_structured_llm")
+def test_run_stage_is_cached_on_second_call(mock_call, cfg):
+    mock_inst = _mock_gemini_ok(mock_call, ts=3.0, te=2.0)
 
     clip = _clip("001", end=200.0)
     # Empty segments so snap is inert; this test isolates cache behaviour.
     transcript = {"segments": []}
 
     run_content_pruning_stage(cfg.work_dir, [clip], transcript, transcript_fp="fp", config=cfg)
-    assert mock_inst.models.generate_content.call_count == 1
+    assert mock_inst.call_count == 1
 
     out2 = run_content_pruning_stage(
         cfg.work_dir, [clip], transcript, transcript_fp="fp", config=cfg
     )
-    assert mock_inst.models.generate_content.call_count == 1  # still 1 -> cache hit
+    assert mock_inst.call_count == 1  # still 1 -> cache hit
     assert out2[0].trim_start_sec == pytest.approx(3.0)
 
 
-@patch("humeo.content_pruning.genai.Client")
-def test_run_stage_cache_invalidates_on_level_change(mock_client_cls, cfg, monkeypatch):
-    monkeypatch.setenv("GOOGLE_API_KEY", "test-key")
-    mock_inst = _mock_gemini_ok(mock_client_cls, ts=3.0, te=2.0)
+@patch("humeo.content_pruning.call_structured_llm")
+def test_run_stage_cache_invalidates_on_level_change(mock_call, cfg):
+    mock_inst = _mock_gemini_ok(mock_call, ts=3.0, te=2.0)
 
     clip = _clip("001", end=200.0)
     transcript = _transcript_for(100.0, 200.0)
 
     run_content_pruning_stage(cfg.work_dir, [clip], transcript, transcript_fp="fp", config=cfg)
-    assert mock_inst.models.generate_content.call_count == 1
+    assert mock_inst.call_count == 1
 
     cfg2 = PipelineConfig(
         youtube_url=cfg.youtube_url,
@@ -597,12 +613,11 @@ def test_run_stage_cache_invalidates_on_level_change(mock_client_cls, cfg, monke
     run_content_pruning_stage(
         cfg2.work_dir, [clip], transcript, transcript_fp="fp", config=cfg2
     )
-    assert mock_inst.models.generate_content.call_count == 2
+    assert mock_inst.call_count == 2
 
 
-@patch("humeo.content_pruning.genai.Client")
-def test_run_stage_off_level_short_circuits(mock_client_cls, tmp_path, monkeypatch):
-    monkeypatch.setenv("GOOGLE_API_KEY", "test-key")
+@patch("humeo.content_pruning.call_structured_llm")
+def test_run_stage_off_level_short_circuits(mock_call, tmp_path):
     cfg = PipelineConfig(
         youtube_url="https://youtu.be/abc",
         work_dir=tmp_path,
@@ -615,16 +630,13 @@ def test_run_stage_off_level_short_circuits(mock_client_cls, tmp_path, monkeypat
     )
     assert out[0].trim_start_sec == 0.0
     assert out[0].trim_end_sec == 0.0
-    mock_client_cls.assert_not_called()
+    mock_call.assert_not_called()
     assert not (cfg.work_dir / PRUNE_META_FILENAME).exists()
 
 
-@patch("humeo.content_pruning.genai.Client")
-def test_run_stage_swallows_llm_errors(mock_client_cls, cfg, monkeypatch, caplog):
-    monkeypatch.setenv("GOOGLE_API_KEY", "test-key")
-    mock_inst = MagicMock()
-    mock_client_cls.return_value = mock_inst
-    mock_inst.models.generate_content.side_effect = RuntimeError("boom")
+@patch("humeo.content_pruning.call_structured_llm")
+def test_run_stage_swallows_llm_errors(mock_call, cfg, caplog):
+    mock_call.side_effect = RuntimeError("boom")
 
     clip = _clip("001", end=200.0)
     transcript = _transcript_for(100.0, 200.0)
@@ -638,15 +650,14 @@ def test_run_stage_swallows_llm_errors(mock_client_cls, cfg, monkeypatch, caplog
     assert any("Content pruning call failed" in r.message for r in caplog.records)
 
 
-@patch("humeo.content_pruning.genai.Client")
-def test_run_stage_force_bypasses_cache(mock_client_cls, cfg, monkeypatch):
-    monkeypatch.setenv("GOOGLE_API_KEY", "test-key")
-    mock_inst = _mock_gemini_ok(mock_client_cls, ts=3.0, te=2.0)
+@patch("humeo.content_pruning.call_structured_llm")
+def test_run_stage_force_bypasses_cache(mock_call, cfg):
+    mock_inst = _mock_gemini_ok(mock_call, ts=3.0, te=2.0)
     clip = _clip("001", end=200.0)
     transcript = _transcript_for(100.0, 200.0)
 
     run_content_pruning_stage(cfg.work_dir, [clip], transcript, transcript_fp="fp", config=cfg)
-    assert mock_inst.models.generate_content.call_count == 1
+    assert mock_inst.call_count == 1
 
     cfg_force = PipelineConfig(
         youtube_url=cfg.youtube_url,
@@ -658,7 +669,7 @@ def test_run_stage_force_bypasses_cache(mock_client_cls, cfg, monkeypatch):
     run_content_pruning_stage(
         cfg_force.work_dir, [clip], transcript, transcript_fp="fp", config=cfg_force
     )
-    assert mock_inst.models.generate_content.call_count == 2
+    assert mock_inst.call_count == 2
 
 
 # ---------------------------------------------------------------------------

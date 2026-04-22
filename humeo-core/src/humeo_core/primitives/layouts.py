@@ -232,12 +232,13 @@ def _stack_filtergraph(
     out_w: int,
     top_h: int,
     bot_h: int,
+    input_label: str,
 ) -> str:
     """Compose the split filter graph: ``[0:v]split=2 → two crops → vstack → [vout]``."""
     top_fg = top_strip.filter_crop("src1", out_w, top_h, "top")
     bot_fg = bot_strip.filter_crop("src2", out_w, bot_h, "bot")
     return (
-        f"[0:v]split=2[src1][src2];"
+        f"[{input_label}]split=2[src1][src2];"
         f"{top_fg};"
         f"{bot_fg};"
         f"[top][bot]vstack=inputs=2[vout]"
@@ -256,12 +257,13 @@ def plan_zoom_call_center(
     out_h: int,
     src_w: int = DEFAULT_SRC_W,
     src_h: int = DEFAULT_SRC_H,
+    input_label: str = "0:v",
 ) -> FilterPlan:
-    """1 person, tight zoom-call framing. ``zoom`` clamped to ``>= 1.25``."""
-    zoom = max(instruction.zoom, 1.25)
+    """1 person, tight zoom-call framing driven by the caller's chosen zoom."""
+    zoom = max(instruction.zoom, 1.0)
     cw, ch, x, y = _center_crop_to_9x16(src_w, src_h, zoom, instruction.person_x_norm)
     fg = (
-        f"[0:v]crop={cw}:{ch}:{x}:{y},"
+        f"[{input_label}]crop={cw}:{ch}:{x}:{y},"
         f"scale={out_w}:{out_h}:flags=lanczos,setsar=1[vout]"
     )
     return FilterPlan(filtergraph=fg)
@@ -274,6 +276,7 @@ def plan_sit_center(
     out_h: int,
     src_w: int = DEFAULT_SRC_W,
     src_h: int = DEFAULT_SRC_H,
+    input_label: str = "0:v",
 ) -> FilterPlan:
     """1 person, interview/seated framing. Vertical center biased to ``0.48``
     so faces sit slightly above the 9:16 middle instead of centered on a
@@ -284,7 +287,7 @@ def plan_sit_center(
         src_w, src_h, 9 / 16, zoom, instruction.person_x_norm, 0.48
     )
     fg = (
-        f"[0:v]crop={cw}:{ch}:{x}:{y},"
+        f"[{input_label}]crop={cw}:{ch}:{x}:{y},"
         f"scale={out_w}:{out_h}:flags=lanczos,setsar=1[vout]"
     )
     return FilterPlan(filtergraph=fg)
@@ -302,6 +305,7 @@ def plan_split_chart_person(
     out_h: int,
     src_w: int = DEFAULT_SRC_W,
     src_h: int = DEFAULT_SRC_H,
+    input_label: str = "0:v",
 ) -> FilterPlan:
     """1 chart + 1 person.
 
@@ -355,6 +359,7 @@ def plan_split_chart_person(
         out_w=out_w,
         top_h=top_h,
         bot_h=bot_h,
+        input_label=input_label,
     )
 
 
@@ -366,6 +371,7 @@ def _emit_split(
     out_w: int,
     top_h: int,
     bot_h: int,
+    input_label: str,
 ) -> FilterPlan:
     if order == FocusStackOrder.CHART_THEN_PERSON:
         fg = _stack_filtergraph(
@@ -374,6 +380,7 @@ def _emit_split(
             out_w=out_w,
             top_h=top_h,
             bot_h=bot_h,
+            input_label=input_label,
         )
     else:
         fg = _stack_filtergraph(
@@ -382,6 +389,7 @@ def _emit_split(
             out_w=out_w,
             top_h=top_h,
             bot_h=bot_h,
+            input_label=input_label,
         )
     return FilterPlan(filtergraph=fg)
 
@@ -393,6 +401,7 @@ def plan_split_two_persons(
     out_h: int,
     src_w: int = DEFAULT_SRC_W,
     src_h: int = DEFAULT_SRC_H,
+    input_label: str = "0:v",
 ) -> FilterPlan:
     """2 persons (interview two-up) stacked vertically.
 
@@ -421,6 +430,7 @@ def plan_split_two_persons(
         out_w=out_w,
         top_h=top_h,
         bot_h=bot_h,
+        input_label=input_label,
     )
     return FilterPlan(filtergraph=fg)
 
@@ -432,6 +442,7 @@ def plan_split_two_charts(
     out_h: int,
     src_w: int = DEFAULT_SRC_W,
     src_h: int = DEFAULT_SRC_H,
+    input_label: str = "0:v",
 ) -> FilterPlan:
     """2 charts stacked vertically.
 
@@ -460,6 +471,7 @@ def plan_split_two_charts(
         out_w=out_w,
         top_h=top_h,
         bot_h=bot_h,
+        input_label=input_label,
     )
     return FilterPlan(filtergraph=fg)
 
@@ -480,6 +492,7 @@ def plan_layout(
     out_h: int = 1920,
     src_w: int = DEFAULT_SRC_W,
     src_h: int = DEFAULT_SRC_H,
+    input_label: str = "0:v",
 ) -> FilterPlan:
     """Dispatch to one of the five thrusters.
 
@@ -490,4 +503,11 @@ def plan_layout(
     fn = _DISPATCH.get(instruction.layout)
     if fn is None:
         raise ValueError(f"Unknown layout: {instruction.layout!r}")
-    return fn(instruction, out_w=out_w, out_h=out_h, src_w=src_w, src_h=src_h)
+    return fn(
+        instruction,
+        out_w=out_w,
+        out_h=out_h,
+        src_w=src_w,
+        src_h=src_h,
+        input_label=input_label,
+    )

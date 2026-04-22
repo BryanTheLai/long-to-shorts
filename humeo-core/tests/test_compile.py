@@ -46,6 +46,22 @@ def test_map_vout_and_primary_audio():
     assert "0:a:0" in cmd
 
 
+def test_inner_keep_ranges_switch_to_concat_filtergraph():
+    clip = Clip(
+        clip_id="1",
+        topic="t",
+        start_time_sec=10.0,
+        end_time_sec=40.0,
+        keep_ranges_sec=[(0.0, 4.0), (6.0, 10.0)],
+    )
+    cmd = build_ffmpeg_cmd(_req(clip=clip))
+    fg = cmd[cmd.index("-filter_complex") + 1]
+    assert "trim=start=0.000:end=4.000" in fg
+    assert "atrim=start=6.000:end=10.000" in fg
+    assert "concat=n=2:v=1:a=1[vclip][aclip]" in fg
+    assert "[aclip]" in cmd
+
+
 def test_subtitle_style_uses_requested_font_and_margin():
     cmd = build_ffmpeg_cmd(
         _req(subtitle_path="/tmp/clip.srt", subtitle_font_size=18, subtitle_margin_v=64)
