@@ -1,4 +1,4 @@
-# Humeo
+# Longs to short
 
 Long podcast or interview -> vertical 9:16 shorts. Pipeline: download, transcribe, structured LLM stages (clip selection, hook detection, content pruning, layout vision), then ffmpeg render.
 
